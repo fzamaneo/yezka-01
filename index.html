@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YEZKA-01 | Gestión Avanzada de Librerías</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         /* Variables de Color (Estilo Oscuro) */
         :root {
@@ -92,7 +93,7 @@
         .ascii-art {
             font-family: 'Courier New', Courier, monospace;
             color: var(--accent);
-            font-size: clamp(6px, 1.2vw, 14px); /* Ajuste automático */
+            font-size: clamp(6px, 1.2vw, 14px);
             line-height: 1.1;
             display: inline-block;
             text-align: left;
@@ -160,6 +161,23 @@
             font-size: 0.9em;
             color: #fff;
         }
+
+        /* Estilos para las notas de GitHub inyectadas */
+        #github-release-notes h1, #github-release-notes h2 {
+            font-size: 1.5rem;
+            color: var(--accent);
+            margin-top: 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.5rem;
+        }
+        #github-release-notes h3 {
+            font-size: 1.2rem;
+            color: #ff9800; /* Naranja para subtítulos menores */
+            margin-top: 1rem;
+        }
+        #github-release-notes a {
+            color: var(--accent);
+        }
     </style>
 </head>
 <body>
@@ -207,23 +225,12 @@
 
             <div class="card">
                 <h2>Notas de cambios</h2>
-                <p class="subtitle">Últimas mejoras en la aplicación.</p>
+                <p class="subtitle">Últimas mejoras extraídas directamente de GitHub.</p>
 
                 <div style="border-left: 3px solid var(--accent); padding-left: 1rem; margin-bottom: 1.5rem;">
-                    <h3>Versión 0.9.42 (Actual)</h3>
-                    
-                    <p style="color: var(--accent); margin-bottom: 0.2rem; font-weight: bold;">Nuevas funciones:</p>
-                    <ul>
-                        <li><strong>Personaliza tus nombres:</strong> Ahora puedes elegir cómo separar el Key y el BPM en el nombre del archivo (puedes usar guiones, signos o espacios según tu gusto).</li>
-                        <li><strong>Limpieza automática:</strong> La aplicación es mucho más inteligente para reconocer textos y limpiar el título original de tus canciones sin que queden símbolos sueltos.</li>
-                    </ul>
-
-                    <p style="color: #ff9800; margin-bottom: 0.2rem; margin-top: 1rem; font-weight: bold;">Lo corregido:</p>
-                    <ul>
-                        <li>Se mejoró el aspecto visual de las pestañas principales para que encajen perfectamente en la pantalla sin dejar espacios vacíos.</li>
-                        <li>Se solucionó un fallo que a veces duplicaba tareas en la cola de procesamiento por accidente.</li>
-                        <li>La barra que te muestra en qué carpeta estás trabajando ya no desaparecerá de tu vista.</li>
-                    </ul>
+                    <div id="github-release-notes">
+                        <p style="color: var(--text-muted);">Cargando notas de la última versión...</p>
+                    </div>
                 </div>
             </div>
             
@@ -303,12 +310,13 @@
             window.scrollTo(0, 0);
         }
 
-        // Función para obtener la última versión de GitHub
+        // Función para obtener la última versión y notas de GitHub
         async function getLatestRelease() {
             const owner = 'fzamaneo'; 
             const repo = 'yezka-01';     
 
             const btn = document.getElementById('btn-download');
+            const notesContainer = document.getElementById('github-release-notes');
             
             try {
                 const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/latest`);
@@ -319,23 +327,36 @@
                 
                 const data = await response.json();
                 const version = data.tag_name;
+                const releaseName = data.name || version;
+                const releaseBody = data.body; // El texto del release en GitHub
                 
+                // --- 1. ACTUALIZAR EL BOTÓN DE DESCARGA ---
                 let downloadUrl = data.html_url; 
-                
                 if (data.assets && data.assets.length > 0) {
                     const macAsset = data.assets.find(asset => asset.name.endsWith('.zip') || asset.name.endsWith('.dmg'));
                     if (macAsset) {
                         downloadUrl = macAsset.browser_download_url;
                     }
                 }
-
                 btn.innerText = `Descargar Versión ${version}`;
                 btn.href = downloadUrl;
+
+                // --- 2. INYECTAR LAS NOTAS DE LANZAMIENTO ---
+                if (releaseBody) {
+                    // Título de la versión
+                    let htmlContent = `<h3 style="color: var(--text-main); margin-top: 0;">Versión ${releaseName}</h3>`;
+                    // Convertir el markdown de GitHub a HTML
+                    htmlContent += marked.parse(releaseBody);
+                    notesContainer.innerHTML = htmlContent;
+                } else {
+                    notesContainer.innerHTML = `<h3 style="color: var(--text-main); margin-top: 0;">Versión ${releaseName}</h3><p>No hay notas detalladas para esta actualización.</p>`;
+                }
 
             } catch (error) {
                 console.error('Error fetching release:', error);
                 btn.innerText = 'Descargar Última Versión';
                 btn.href = `https://github.com/${owner}/${repo}/releases/latest`;
+                notesContainer.innerHTML = '<p style="color: #ff5252;">No se pudieron cargar las notas de la actualización en este momento. Revisa GitHub para más detalles.</p>';
             }
         }
 
