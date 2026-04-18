@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YEZKA-01 | Gestión Avanzada de Librerías</title>
+    <style>
+        /* Variables de Color (Estilo Oscuro) */
+        :root {
+            --bg-base: #121212;
+            --bg-panel: #1e1e1e;
+            --text-main: #dfdfdf;
+            --text-muted: #9e9e9e;
+            --accent: #4caf50;
+            --accent-hover: #45a049;
+            --border-color: #333333;
+        }
+
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-base);
+            color: var(--text-main);
+            line-height: 1.6;
+        }
+
+        /* Navegación */
+        header {
+            background-color: var(--bg-panel);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: bold;
+            letter-spacing: 2px;
+            color: #ffffff;
+        }
+
+        nav button {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1rem;
+            margin-left: 1.5rem;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        nav button:hover, nav button.active {
+            color: #ffffff;
+        }
+
+        /* Contenedor Principal */
+        main {
+            max-width: 900px;
+            margin: 3rem auto;
+            padding: 0 2rem;
+        }
+
+        /* Secciones */
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s ease-in-out;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* ASCII Art */
+        .ascii-container {
+            width: 100%;
+            overflow-x: auto;
+            text-align: center;
+            margin-bottom: 2rem;
+            padding: 1rem 0;
+        }
+
+        .ascii-art {
+            font-family: 'Courier New', Courier, monospace;
+            color: var(--accent);
+            font-size: clamp(6px, 1.2vw, 14px); /* Ajuste automático para que no se deforme */
+            line-height: 1.1;
+            display: inline-block;
+            text-align: left;
+            text-shadow: 0 0 10px rgba(76, 175, 80, 0.4); /* Brillo verde sutil */
+        }
+
+        /* Tipografía y Bloques */
+        h1, h2, h3 { color: #ffffff; }
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; }
+        .subtitle { color: var(--text-muted); font-size: 1.2rem; margin-bottom: 2rem; }
+        
+        .card {
+            background-color: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        /* Botones */
+        .btn-download {
+            display: inline-block;
+            background-color: var(--accent);
+            color: #ffffff;
+            padding: 1rem 2rem;
+            text-decoration: none;
+            font-weight: bold;
+            border-radius: 6px;
+            transition: background-color 0.2s;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .btn-download:hover {
+            background-color: var(--accent-hover);
+        }
+
+        .btn-secondary {
+            display: inline-block;
+            background-color: transparent;
+            color: var(--accent);
+            border: 1px solid var(--accent);
+            padding: 0.8rem 1.5rem;
+            text-decoration: none;
+            font-weight: bold;
+            border-radius: 6px;
+            transition: all 0.2s;
+            cursor: pointer;
+            margin-top: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .btn-secondary:hover {
+            background-color: var(--accent);
+            color: #ffffff;
+        }
+
+        ul { padding-left: 1.5rem; }
+        li { margin-bottom: 0.5rem; }
+
+        kbd, code {
+            background-color: #333;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">YEZKA-01</div>
+        <nav>
+            <button class="tab-btn active" onclick="openTab('inicio')">Inicio</button>
+            <button class="tab-btn" onclick="openTab('guia')">Guía de Usuario</button>
+        </nav>
+    </header>
+
+    <main>
+        <section id="inicio" class="tab-content active">
+            
+            <div class="ascii-container">
+                <pre class="ascii-art">
+▓██   ██▓▓█████ ██▒   █▓ ██▒   █▓   ▒██   ██▒    ███▄ ▄███▓▓█████   ██████  ██ ▄█▀▄▄▄      
+ ▒██  ██▒▓█   ▀▓██░   █▒▓██░   █▒   ▒▒ █ █ ▒░   ▓██▒▀█▀ ██▒▓█   ▀ ▒██    ▒  ██▄█▒▒████▄    
+  ▒██ ██░▒███   ▓██  █▒░ ▓██  █▒░   ░░  █   ░   ▓██    ▓██░▒███   ░ ▓██▄   ▓███▄░▒██  ▀█▄  
+  ░ ▐██▓░▒▓█  ▄  ▒██ █░░  ▒██ █░░    ░ █ █ ▒    ▒██    ▒██ ▒▓█  ▄   ▒   ██▒▓██ █▄░██▄▄▄▄██ 
+  ░ ██▒▓░░▒████▒  ▒▀█░     ▒▀█░     ▒██▒ ▒██▒   ▒██▒   ░██▒░▒████▒▒██████▒▒▒██▒ █▄▓█   ▓██▒
+   ██▒▒▒  ░░ ▒░ ░  ░ ▐░     ░ ▐░     ▒▒ ░ ░▓ ░   ░ ▒░   ░  ░░░ ▒░ ░▒ ▒▓▒ ▒ ░▒ ▒▒ ▓▒▒▒   ▓▒█░
+ ▓██ ░▒░   ░ ░  ░  ░ ░░     ░ ░░     ░░   ░▒ ░   ░  ░      ░ ░ ░  ░░ ░▒  ░ ░░ ░▒ ▒░ ▒   ▒▒ ░
+ ▒ ▒ ░░      ░       ░░       ░░     ░    ░      ░       ░     ░   ░  ░  ░ ░░ ░  ░   ▒   
+ ░ ░         ░  ░    ░        ░      ░    ░              ░     ░  ░      ░  ░  ░       ░  ░
+ ░ ░                 ░        ░                                                          
+                </pre>
+            </div>
+
+            <div style="text-align: center; margin-bottom: 2rem;">
+                <h1>Gestión Avanzada de Librerías</h1>
+                <p class="subtitle">Optimiza tu flujo de trabajo en Ableton Live. Renombra masivamente, estampa metadatos (BPM/Key) y convierte a WAV fácilmente.</p>
+            </div>
+            
+            <div class="card" style="text-align: center;">
+                <a href="#" class="btn-download">Descargar Versión 0.9.42</a>
+                <br>
+                <button class="btn-secondary" onclick="openTab('guia')">📖 Leer Guía de Usuario</button>
+                
+                <p style="font-size: 0.9rem; color: var(--text-muted);">
+                    Requiere macOS. <em>Nota: La primera vez que abras la aplicación, puede tardar unos segundos extra en cargar por validaciones del sistema.</em>
+                </p>
+            </div>
+
+            <div class="card">
+                <h2>Notas de cambios</h2>
+                <p class="subtitle">Últimas mejoras en la aplicación.</p>
+
+                <div style="border-left: 3px solid var(--accent); padding-left: 1rem; margin-bottom: 1.5rem;">
+                    <h3>Versión 0.9.42 (Actual)</h3>
+                    
+                    <p style="color: var(--accent); margin-bottom: 0.2rem; font-weight: bold;">Nuevas funciones:</p>
+                    <ul>
+                        <li><strong>Personaliza tus nombres:</strong> Ahora puedes elegir cómo separar el Key y el BPM en el nombre del archivo (puedes usar guiones, signos o espacios según tu gusto).</li>
+                        <li><strong>Limpieza automática:</strong> La aplicación es mucho más inteligente para reconocer textos y limpiar el título original de tus canciones sin que queden símbolos sueltos.</li>
+                    </ul>
+
+                    <p style="color: #ff9800; margin-bottom: 0.2rem; margin-top: 1rem; font-weight: bold;">Lo corregido:</p>
+                    <ul>
+                        <li>Se mejoró el aspecto visual de las pestañas principales para que encajen perfectamente en la pantalla sin dejar espacios vacíos.</li>
+                        <li>Se solucionó un fallo que a veces duplicaba tareas en la cola de procesamiento por accidente.</li>
+                        <li>La barra que te muestra en qué carpeta estás trabajando ya no desaparecerá de tu vista.</li>
+                    </ul>
+                </div>
+                </div>
+            
+            <div class="card">
+                <h3>¿Encontraste un error?</h3>
+                <p>YEZKA-01 está en fase de testing. Si la aplicación falla, tienes ideas para mejorarla o simplemente quieres dejar tu feedback, por favor repórtalo en nuestra sección de <a href="https://github.com/TU-USUARIO/TU-REPO/issues" style="color: var(--accent);">Issues en GitHub</a> o envíame un mensaje directo a mi Instagram <a href="https://instagram.com/meska.wav" target="_blank" style="color: var(--accent); font-weight: bold;">@meska.wav</a>.</p>
+            </div>
+        </section>
+
+        <section id="guia" class="tab-content">
+            <h2>Guía de Usuario</h2>
+            <p class="subtitle">Aprende a dominar YEZKA-01 y optimizar tu librería paso a paso.</p>
+
+            <div class="card">
+                <h3>1. Escucha antes de editar (Reproductor Integrado)</h3>
+                <p>No necesitas abrir otros programas para saber qué canción vas a editar. Cada pista tiene un ícono de "Play" al inicio de su fila. <strong>Puedes reproducir, pausar y detener el audio directamente en la aplicación</strong>, lo cual es vital para confirmar el ritmo o la versión de la canción antes de modificarla.</p>
+
+                <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 2rem 0;">
+
+                <h3>2. Los dos modos de trabajo</h3>
+                <p>YEZKA-01 se adapta a tu estilo de organización con dos pestañas principales:</p>
+                <ul>
+                    <li><strong>Carpeta Inteligente:</strong> Ideal para un flujo de trabajo rápido. La aplicación vigila la carpeta <code>Documentos/ARCHIVOS_YEZKA</code>. Cualquier archivo nuevo que descargues o guardes allí, aparecerá al instante en la pantalla, listo para ser procesado.</li>
+                    <li><strong>Modo Local (Manual):</strong> Úsalo cuando quieras ordenar música que ya tienes guardada en otras partes de tu Mac. Simplemente selecciona la carpeta que deseas abrir y cargará todas las pistas a la vez. <em>(Dato útil: Gracias a su optimización visual, puedes cargar cientos de canciones y desplazarte por ellas de forma totalmente fluida).</em></li>
+                </ul>
+
+                <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 2rem 0;">
+
+                <h3>3. Editar Metadatos y Renombrar (El flujo de trabajo)</h3>
+                <p>Para evitar errores accidentales en tus archivos originales, YEZKA-01 utiliza un sistema seguro de dos pasos:</p>
+                <ol>
+                    <li><strong>Previsualiza el cambio (Fase 1):</strong> Haz clic en la casilla de BPM o Key de una canción y escribe el dato. Al presionar <kbd>Enter</kbd>, verás instantáneamente cómo quedará el nuevo nombre del archivo en la pantalla. Un punto 🔴 rojo aparecerá para indicarte que este cambio es solo una vista previa y aún no se ha guardado en tu disco duro.</li>
+                    <li><strong>Guarda de verdad (Fase 2):</strong> Cuando estés satisfecho con cómo lucen los nombres, haz clic en el botón principal <strong>APLICAR CAMBIOS</strong>. En este momento, la aplicación renombrará físicamente el archivo y guardará los datos de BPM/Key dentro del archivo mismo (etiquetas ID3). El punto pasará a 🟢 verde y la canción brillará en blanco para confirmarte que ya está lista para usarse en programas como Ableton o Rekordbox.</li>
+                </ol>
+
+                <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 2rem 0;">
+
+                <h3>4. Conversión y Reportes</h3>
+                <ul>
+                    <li><strong>Botón "WAV ALL":</strong> La industria exige la máxima calidad de audio. Si tienes pistas en formatos comprimidos como MP3 o FLAC, solo haz clic en este botón y la aplicación las convertirá todas a WAV en segundo plano. Sabrás que terminó cuando el botón "WAV" de cada canción se ilumine en verde.</li>
+                    <li><strong>Exportación CSV:</strong> ¿Necesitas un catálogo de tu música? El botón "CSV" en la parte superior te genera una hoja de cálculo al instante con todos los nombres, BPMs y Keys de la lista que acabas de organizar.</li>
+                </ul>
+
+                <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 2rem 0;">
+
+                <h3>5. ¡Me equivoqué! (Cómo corregir errores)</h3>
+                <p>YEZKA-01 está pensada para proteger tu música. Tienes dos formas de corregir equivocaciones:</p>
+                <ul>
+                    <li><strong>Atajos de teclado:</strong> Mientras estás escribiendo un BPM o Key, puedes presionar <kbd>Cmd</kbd> + <kbd>Z</kbd> en tu Mac para deshacer el texto al instante, igual que en cualquier otro programa.</li>
+                    <li><strong>El botón "Restaurar" (↩):</strong> Si ya presionaste "Aplicar Cambios" y te diste cuenta de que le pusiste el nombre o el BPM equivocado a una pista, no entres en pánico. Haz clic en el ícono de flecha (↩) en esa fila. La aplicación buscará automáticamente tu archivo original (intacto) en la carpeta de copias de seguridad y lo devolverá a su estado inicial.</li>
+                </ul>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        function openTab(tabName) {
+            var contents = document.getElementsByClassName("tab-content");
+            for (var i = 0; i < contents.length; i++) {
+                contents[i].classList.remove("active");
+            }
+            
+            var buttons = document.getElementsByClassName("tab-btn");
+            for (var i = 0; i < buttons.length; i++) {
+                buttons[i].classList.remove("active");
+            }
+            
+            document.getElementById(tabName).classList.add("active");
+            
+            // Si la llamada viene del header, activar la pestaña correspondiente
+            if (event && event.currentTarget.classList.contains('tab-btn')) {
+                event.currentTarget.classList.add("active");
+            } else {
+                // Si viene del botón "Leer Guía", forzar la activación en la barra superior
+                var targetBtn = document.querySelector(`nav button[onclick="openTab('${tabName}')"]`);
+                if(targetBtn) targetBtn.classList.add("active");
+            }
+            
+            // Subir al inicio de la página al cambiar
+            window.scrollTo(0, 0);
+        }
+    </script>
+</body>
+</html>
