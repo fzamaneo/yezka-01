@@ -92,11 +92,11 @@
         .ascii-art {
             font-family: 'Courier New', Courier, monospace;
             color: var(--accent);
-            font-size: clamp(6px, 1.2vw, 14px); /* Ajuste automático para que no se deforme */
+            font-size: clamp(6px, 1.2vw, 14px); /* Ajuste automático */
             line-height: 1.1;
             display: inline-block;
             text-align: left;
-            text-shadow: 0 0 10px rgba(76, 175, 80, 0.4); /* Brillo verde sutil */
+            text-shadow: 0 0 10px rgba(76, 175, 80, 0.4); 
         }
 
         /* Tipografía y Bloques */
@@ -196,7 +196,7 @@
             </div>
             
             <div class="card" style="text-align: center;">
-                <a href="#" class="btn-download">Descargar Versión 0.9.42</a>
+                <a href="https://github.com/fzamaneo/yezka-01/releases/latest" id="btn-download" class="btn-download">Buscando última versión...</a>
                 <br>
                 <button class="btn-secondary" onclick="openTab('guia')">📖 Leer Guía de Usuario</button>
                 
@@ -225,11 +225,11 @@
                         <li>La barra que te muestra en qué carpeta estás trabajando ya no desaparecerá de tu vista.</li>
                     </ul>
                 </div>
-                </div>
+            </div>
             
             <div class="card">
                 <h3>¿Encontraste un error?</h3>
-                <p>YEZKA-01 está en fase de testing. Si la aplicación falla, tienes ideas para mejorarla o simplemente quieres dejar tu feedback, por favor repórtalo en nuestra sección de <a href="https://github.com/TU-USUARIO/TU-REPO/issues" style="color: var(--accent);">Issues en GitHub</a> o envíame un mensaje directo a mi Instagram <a href="https://instagram.com/meska.wav" target="_blank" style="color: var(--accent); font-weight: bold;">@meska.wav</a>.</p>
+                <p>YEZKA-01 está en fase de testing. Si la aplicación falla, tienes ideas para mejorarla o simplemente quieres dejar tu feedback, por favor repórtalo en nuestra sección de <a href="https://github.com/fzamaneo/yezka-01/issues" target="_blank" style="color: var(--accent);">Issues en GitHub</a> o envíame un mensaje directo a mi Instagram <a href="https://instagram.com/meska.wav" target="_blank" style="color: var(--accent); font-weight: bold;">@meska.wav</a>.</p>
             </div>
         </section>
 
@@ -280,6 +280,7 @@
     </main>
 
     <script>
+        // Función para cambiar de pestañas
         function openTab(tabName) {
             var contents = document.getElementsByClassName("tab-content");
             for (var i = 0; i < contents.length; i++) {
@@ -293,18 +294,53 @@
             
             document.getElementById(tabName).classList.add("active");
             
-            // Si la llamada viene del header, activar la pestaña correspondiente
             if (event && event.currentTarget.classList.contains('tab-btn')) {
                 event.currentTarget.classList.add("active");
             } else {
-                // Si viene del botón "Leer Guía", forzar la activación en la barra superior
                 var targetBtn = document.querySelector(`nav button[onclick="openTab('${tabName}')"]`);
                 if(targetBtn) targetBtn.classList.add("active");
             }
-            
-            // Subir al inicio de la página al cambiar
             window.scrollTo(0, 0);
         }
+
+        // Función para obtener la última versión de GitHub
+        async function getLatestRelease() {
+            const owner = 'fzamaneo'; 
+            const repo = 'yezka-01';     
+
+            const btn = document.getElementById('btn-download');
+            
+            try {
+                const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/latest`);
+                
+                if (!response.ok) {
+                    throw new Error('No se pudo obtener la información de GitHub');
+                }
+                
+                const data = await response.json();
+                const version = data.tag_name;
+                
+                let downloadUrl = data.html_url; 
+                
+                if (data.assets && data.assets.length > 0) {
+                    const macAsset = data.assets.find(asset => asset.name.endsWith('.zip') || asset.name.endsWith('.dmg'));
+                    if (macAsset) {
+                        downloadUrl = macAsset.browser_download_url;
+                    }
+                }
+
+                btn.innerText = `Descargar Versión ${version}`;
+                btn.href = downloadUrl;
+
+            } catch (error) {
+                console.error('Error fetching release:', error);
+                btn.innerText = 'Descargar Última Versión';
+                btn.href = `https://github.com/${owner}/${repo}/releases/latest`;
+            }
+        }
+
+        // Ejecutar al cargar la página
+        document.addEventListener('DOMContentLoaded', getLatestRelease);
     </script>
 </body>
 </html>
