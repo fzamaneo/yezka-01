@@ -156,7 +156,7 @@ class YezkaApp(ctk.CTk):
         super().__init__()
         self._init_done = False 
         
-        self.title("YEZKA-01 - v0.9.42 (Stable Edition + Aligned Tabs)") 
+        self.title("YEZKA-01 - v0.9.42 (Custom Separators & Perfect Alignment)") 
         self.geometry("1134x780") 
         self.resizable(True, True)
         self.configure(fg_color=BG_MAIN)
@@ -258,9 +258,6 @@ class YezkaApp(ctk.CTk):
         self.frame_tabs_container = ctk.CTkFrame(self.frame_toolbar, fg_color=BG_MAIN, corner_radius=0)
         self.frame_tabs_container.pack(side="left", fill="y", expand=False)
         
-        self.tabs = ctk.CTkTabview(self.frame_tabs_container, height=85, fg_color="transparent", bg_color="transparent", segmented_button_fg_color=BG_ELEMENT, segmented_button_selected_color="#2A2A2A", segmented_button_unselected_color=BG_ELEMENT, text_color=TEXT_NORMAL, command=self.on_tab_change)
-        self.tabs.pack(side="left", fill="both", expand=True)
-
         self._build_tabs_completely(startup=True)
 
         self.frame_global_tools = ctk.CTkFrame(self.frame_toolbar, fg_color="transparent")
@@ -425,11 +422,19 @@ class YezkaApp(ctk.CTk):
             pass
 
     def _build_tabs_completely(self, startup=False):
-        """Mantiene MODO MANUAL fijo y solo manipula las pestañas de carpetas para evitar problemas de layout"""
         if startup:
-            self.tab_local = self.tabs.add("MODO MANUAL")
-            self._build_local_tab_ui()
-        else:
+            self.tabs = ctk.CTkTabview(self.frame_tabs_container, height=85, fg_color="transparent", bg_color="transparent", segmented_button_fg_color=BG_ELEMENT, segmented_button_selected_color="#2A2A2A", segmented_button_unselected_color=BG_ELEMENT, text_color=TEXT_NORMAL, command=self.on_tab_change)
+            self.tabs.pack(side="left", fill="both", expand=True)
+
+        active_tab = self.default_tab_pref if startup else "CARPETA INTELIGENTE"
+        if not startup:
+            try: active_tab = self.tabs.get()
+            except: pass
+            
+            if "MODO MANUAL" in self.tabs._tab_dict:
+                self.tabs.set("MODO MANUAL")
+            self.update_idletasks()
+            
             for tab_name in list(self.smart_tab_widgets.keys()):
                 try: self.tabs.delete(tab_name)
                 except: pass
@@ -438,13 +443,23 @@ class YezkaApp(ctk.CTk):
 
         self.smart_tab_widgets.clear()
         
+        if startup:
+            self.tab_local = self.tabs.add("MODO MANUAL")
+            self._build_local_tab_ui()
+        
         for i, path in enumerate(self.smart_folders):
             self.add_smart_tab_ui(i, path)
             
         self.tabs.add("+")
-        
-        # Forzar alineación izquierda para asegurar que no quede hueco
         self._fix_tab_alignment()
+        
+        if not startup:
+            self.update_idletasks()
+            if active_tab in self.smart_tab_widgets or active_tab == "MODO MANUAL":
+                self.tabs.set(active_tab)
+            else:
+                last_smart = f"CARPETA INTELIGENTE {len(self.smart_folders)}" if len(self.smart_folders) > 1 else "CARPETA INTELIGENTE"
+                self.tabs.set(last_smart)
 
     def _build_local_tab_ui(self):
         for w in self.tab_local.winfo_children(): w.destroy()
@@ -511,17 +526,10 @@ class YezkaApp(ctk.CTk):
         if d:
             self.smart_folders.append(d)
             self.save_config()
+            self._build_tabs_completely(startup=False)
             
-            try: self.tabs.delete("+")
-            except: pass
-            
-            idx = len(self.smart_folders) - 1
-            self.add_smart_tab_ui(idx, d)
-            self.tabs.add("+")
-            
-            tab_name = f"CARPETA INTELIGENTE {idx+1}"
+            tab_name = f"CARPETA INTELIGENTE {len(self.smart_folders)}"
             self.tabs.set(tab_name)
-            self.update_idletasks()
             self.on_tab_change()
         else:
             if hasattr(self, 'last_active_tab') and self.last_active_tab != "+":
@@ -534,13 +542,7 @@ class YezkaApp(ctk.CTk):
             self.stop_smart_folder()
             del self.smart_folders[idx]
             self.save_config()
-            
-            self.tabs.set("MODO MANUAL")
-            self.update_idletasks()
-            
             self._build_tabs_completely(startup=False)
-            
-            self.tabs.set("CARPETA INTELIGENTE")
             self.on_tab_change()
 
     def _check_default_folder_startup(self):
@@ -1759,6 +1761,8 @@ class YezkaApp(ctk.CTk):
     def convert_all_to_wav(self):
         to_convert = [p for p in self.loaded_paths if not p.lower().endswith('.wav')]
         if not to_convert: return
+        
+        self.stop_smart_folder()
         self.show_loading(f"COLA WAV\n0/{len(to_convert)}")
         self.process_next_conversion(to_convert, 0)
 

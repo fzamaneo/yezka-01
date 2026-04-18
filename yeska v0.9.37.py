@@ -156,7 +156,8 @@ class YezkaApp(ctk.CTk):
         super().__init__()
         self._init_done = False 
         
-        self.title("YEZKA-01 - v0.9.42 (Stable Edition + Aligned Tabs)") 
+        self.title("YEZKA-01 - v0.9.37 (Refined Grid & Ghost Catcher Edition)") 
+        # FIX v0.9.37: Ajuste de dimensiones compacto para 12 filas sin espacio verde extra
         self.geometry("1134x780") 
         self.resizable(True, True)
         self.configure(fg_color=BG_MAIN)
@@ -197,8 +198,6 @@ class YezkaApp(ctk.CTk):
             "TITULO - ◄KEY"
         ]
         
-        self.meta_separator_options = ["►", "-", "=", "+", "-►", "Espacio en blanco"]
-        
         self.smart_folders = [] 
         self.smart_tab_widgets = {}
         self.active_smart_path = ""
@@ -207,7 +206,6 @@ class YezkaApp(ctk.CTk):
         self.show_log_default = False 
         self.default_tab_pref = "CARPETA INTELIGENTE"
         self.default_format_pref = "►KEY ►BPM - TITULO"
-        self.meta_separator = "►"
         self.prompt_create_default_folder = True 
         self.first_run_completed = False 
         self.last_active_tab = "CARPETA INTELIGENTE"
@@ -245,7 +243,7 @@ class YezkaApp(ctk.CTk):
         self.frame_top = ctk.CTkFrame(self, fg_color=BG_MAIN, corner_radius=0)
         self.frame_top.pack(side="top", fill="x", padx=20, pady=(15, 5))
 
-        self.label_title = ctk.CTkLabel(self.frame_top, text="YEZKA-01  //  v0.9.42", font=FONT_TITLE, text_color=TEXT_NORMAL)
+        self.label_title = ctk.CTkLabel(self.frame_top, text="YEZKA-01  //  v0.9.37", font=FONT_TITLE, text_color=TEXT_NORMAL)
         self.label_title.pack(side="left")
 
         self.btn_settings = ctk.CTkButton(self.frame_top, text="", image=self.ic_settings, width=30, height=30, fg_color=BG_MAIN, hover_color=BG_HOVER, command=self.open_general_settings)
@@ -255,6 +253,7 @@ class YezkaApp(ctk.CTk):
         self.frame_toolbar = ctk.CTkFrame(self, fg_color=BG_MAIN, corner_radius=0) 
         self.frame_toolbar.pack(side="top", pady=(5, 10), padx=20, fill="x")
         
+        # FIX v0.9.37: Estructura fija y sólida para las pestañas (evita el espacio negro y la desalineación)
         self.frame_tabs_container = ctk.CTkFrame(self.frame_toolbar, fg_color=BG_MAIN, corner_radius=0)
         self.frame_tabs_container.pack(side="left", fill="y", expand=False)
         
@@ -417,34 +416,25 @@ class YezkaApp(ctk.CTk):
         self.after(500, self._check_default_folder_startup)
         self.focus_force() 
 
-    def _fix_tab_alignment(self):
-        """Inyecta una alineación estricta a la izquierda para evitar huecos en el diseño de pestañas"""
-        try:
-            self.tabs._segmented_button.grid_configure(sticky="w")
-        except:
-            pass
-
     def _build_tabs_completely(self, startup=False):
-        """Mantiene MODO MANUAL fijo y solo manipula las pestañas de carpetas para evitar problemas de layout"""
-        if startup:
-            self.tab_local = self.tabs.add("MODO MANUAL")
-            self._build_local_tab_ui()
-        else:
-            for tab_name in list(self.smart_tab_widgets.keys()):
-                try: self.tabs.delete(tab_name)
-                except: pass
-            try: self.tabs.delete("+")
+        """Fix visual para repintar y alinear sin perder referencias"""
+        for tab_name in list(self.smart_tab_widgets.keys()):
+            try: self.tabs.delete(tab_name)
             except: pass
+        try: self.tabs.delete("MODO MANUAL")
+        except: pass
+        try: self.tabs.delete("+")
+        except: pass
 
         self.smart_tab_widgets.clear()
+        
+        self.tab_local = self.tabs.add("MODO MANUAL")
+        self._build_local_tab_ui()
         
         for i, path in enumerate(self.smart_folders):
             self.add_smart_tab_ui(i, path)
             
         self.tabs.add("+")
-        
-        # Forzar alineación izquierda para asegurar que no quede hueco
-        self._fix_tab_alignment()
 
     def _build_local_tab_ui(self):
         for w in self.tab_local.winfo_children(): w.destroy()
@@ -488,13 +478,14 @@ class YezkaApp(ctk.CTk):
         btn_open.pack(side="left", padx=(0, 5))
         ToolTip(btn_open, "Abrir Carpeta Inteligente")
         
+        # FIX v0.9.37: Botón X a la izquierda de la ruta y ajustado a 18px
         if index > 0:
             btn_del = ctk.CTkButton(frame, text="X", width=18, height=18, fg_color=COLOR_MODIFIED, hover_color="#8B0000", text_color=TEXT_PURE, font=("Menlo", 10, "bold"), corner_radius=RADIUS, command=lambda idx=index: self.remove_smart_folder(idx))
             btn_del.pack(side="left", padx=(10, 5))
             ToolTip(btn_del, "Quitar esta Carpeta Inteligente")
             
-        lbl_path = ctk.CTkLabel(frame, text=f"Ruta: {path}", font=FONT_MONO, text_color=TEXT_DIM, anchor="w")
-        lbl_path.pack(side="left", fill="x", expand=True, padx=(5 if index == 0 else 0, 0))
+        lbl_path = ctk.CTkLabel(frame, text=f"Ruta: {path}", font=FONT_MONO, text_color=TEXT_DIM)
+        lbl_path.pack(side="left", padx=(5 if index == 0 else 0, 0))
         
         self.smart_tab_widgets[tab_name] = {'lbl_path': lbl_path, 'index': index}
 
@@ -511,17 +502,10 @@ class YezkaApp(ctk.CTk):
         if d:
             self.smart_folders.append(d)
             self.save_config()
+            self._build_tabs_completely()
             
-            try: self.tabs.delete("+")
-            except: pass
-            
-            idx = len(self.smart_folders) - 1
-            self.add_smart_tab_ui(idx, d)
-            self.tabs.add("+")
-            
-            tab_name = f"CARPETA INTELIGENTE {idx+1}"
+            tab_name = f"CARPETA INTELIGENTE {len(self.smart_folders)}"
             self.tabs.set(tab_name)
-            self.update_idletasks()
             self.on_tab_change()
         else:
             if hasattr(self, 'last_active_tab') and self.last_active_tab != "+":
@@ -534,12 +518,7 @@ class YezkaApp(ctk.CTk):
             self.stop_smart_folder()
             del self.smart_folders[idx]
             self.save_config()
-            
-            self.tabs.set("MODO MANUAL")
-            self.update_idletasks()
-            
-            self._build_tabs_completely(startup=False)
-            
+            self._build_tabs_completely()
             self.tabs.set("CARPETA INTELIGENTE")
             self.on_tab_change()
 
@@ -739,7 +718,6 @@ class YezkaApp(ctk.CTk):
                     self.show_log_default = data.get("show_log_default", False)
                     self.default_tab_pref = data.get("default_tab_pref", "CARPETA INTELIGENTE")
                     self.default_format_pref = data.get("default_format_pref", "►KEY ►BPM - TITULO")
-                    self.meta_separator = data.get("meta_separator", "►")
                     self.prompt_create_default_folder = data.get("prompt_create_default_folder", True)
                     self.first_run_completed = data.get("first_run_completed", False)
             except: pass
@@ -754,7 +732,6 @@ class YezkaApp(ctk.CTk):
                     "show_log_default": self.show_log_default,
                     "default_tab_pref": self.default_tab_pref,
                     "default_format_pref": self.default_format_pref,
-                    "meta_separator": self.meta_separator,
                     "prompt_create_default_folder": self.prompt_create_default_folder,
                     "first_run_completed": self.first_run_completed
                 }, f)
@@ -764,7 +741,7 @@ class YezkaApp(ctk.CTk):
     def open_general_settings(self):
         dialog = ctk.CTkToplevel(self)
         dialog.title("Ajustes Generales")
-        dialog.geometry("400x520")
+        dialog.geometry("400x480")
         dialog.resizable(False, False)
         dialog.attributes("-topmost", True)
         
@@ -798,13 +775,6 @@ class YezkaApp(ctk.CTk):
         fmt_menu.set(self.default_format_pref)
         fmt_menu.pack(side="right", fill="x", expand=True)
         
-        sep_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        sep_frame.pack(pady=5, fill="x", padx=20)
-        ctk.CTkLabel(sep_frame, text="Separador Meta:", font=FONT_MONO, text_color=TEXT_NORMAL, width=150, anchor="w").pack(side="left")
-        sep_menu = ctk.CTkOptionMenu(sep_frame, values=self.meta_separator_options, fg_color=BG_ELEMENT, button_color=BG_ELEMENT, button_hover_color=BG_HOVER)
-        sep_menu.set(self.meta_separator)
-        sep_menu.pack(side="right", fill="x", expand=True)
-        
         bpm_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         bpm_frame.pack(pady=5, fill="x", padx=20)
         ctk.CTkLabel(bpm_frame, text="Rango BPM:", font=FONT_MONO, text_color=TEXT_NORMAL, width=150, anchor="w").pack(side="left")
@@ -822,7 +792,7 @@ class YezkaApp(ctk.CTk):
 
         folder_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         folder_frame.pack(pady=5, fill="x", padx=20)
-        ctk.CTkLabel(folder_frame, text="Avisar si falta carpeta:", font=FONT_MONO, text_color=TEXT_NORMAL, width=220, anchor="w").pack(side="left")
+        ctk.CTkLabel(folder_frame, text="Avisar si falta carpeta Yezka:", font=FONT_MONO, text_color=TEXT_NORMAL, width=220, anchor="w").pack(side="left")
         self.folder_switch_var = ctk.BooleanVar(value=self.prompt_create_default_folder)
         folder_switch = ctk.CTkSwitch(folder_frame, text="", variable=self.folder_switch_var, onvalue=True, offvalue=False, width=40, progress_color=ACCENT)
         folder_switch.pack(side="right", anchor="e")
@@ -835,7 +805,6 @@ class YezkaApp(ctk.CTk):
             self.bpm_range = bpm_menu.get()
             self.default_tab_pref = tab_menu.get()
             self.default_format_pref = fmt_menu.get()
-            self.meta_separator = sep_menu.get()
             self.prompt_create_default_folder = self.folder_switch_var.get()
             
             new_show_log = self.log_switch_var.get()
@@ -850,8 +819,8 @@ class YezkaApp(ctk.CTk):
                 ctk.set_widget_scaling(self.app_scale)
                 ctk.set_window_scaling(self.app_scale)
                 self.draw_headers()
-            
-            self.refresh_virtual_grid()
+                self.refresh_virtual_grid()
+                
             self.save_config()
             self.log_message(f"> Ajustes guardados.")
             dialog.destroy()
@@ -894,7 +863,6 @@ class YezkaApp(ctk.CTk):
     def on_tab_change(self):
         if not hasattr(self, '_init_done') or not self._init_done: return 
         current_tab = self.tabs.get()
-        self._fix_tab_alignment()
         
         if current_tab == "+":
             if hasattr(self, 'last_active_tab') and self.last_active_tab != "+":
@@ -1028,13 +996,9 @@ class YezkaApp(ctk.CTk):
             self.log_message(f"> [SISTEMA] Removido: {os.path.basename(filepath)}")
 
     def _extract_pure_name(self, name, tb, tk):
+        # FIX v0.9.37: Ignorar las flechas temporalmente solo para extraer sin afectar los espacios internos de las canciones
         if not name: return ""
-        res = name.strip()
-        
-        for s in ["►", "◄", "=", "+", "-►"]:
-            res = res.replace(s, "")
-        res = res.strip()
-            
+        res = name.replace("►", "").replace("◄", "").strip()
         k_n = tk.replace(" ", "").upper().replace("MAJOR", "MAJ").replace("MINOR", "MIN") if tk else ""
         b_n = tb.strip().upper() if tb else ""
         
@@ -1043,6 +1007,7 @@ class YezkaApp(ctk.CTk):
             changed = False
             res_upper = res.upper()
             
+            # Remover KEY exacto de los bordes
             if k_n:
                 if res_upper.startswith(k_n + "-") or res_upper.startswith(k_n + " -"):
                     res = res[len(k_n):].lstrip(" -_")
@@ -1051,6 +1016,7 @@ class YezkaApp(ctk.CTk):
                     res = res[:-len(k_n)].rstrip(" -_")
                     changed = True; continue
                     
+            # Remover BPM exacto de los bordes
             if b_n:
                 for b_variant in [b_n, f"{b_n} BPM", f"{b_n}BPM"]:
                     if res_upper.startswith(b_variant + "-") or res_upper.startswith(b_variant + " -"):
@@ -1060,6 +1026,7 @@ class YezkaApp(ctk.CTk):
                         res = res[:-len(b_variant)].rstrip(" -_")
                         changed = True; break
             
+            # Fallback a regex si quedó basura
             m_k = REGEX_KEY_START.match(res)
             if m_k: res = m_k.group(2).lstrip(" -_"); changed = True; continue
             m_b = REGEX_BPM_START.match(res)
@@ -1075,47 +1042,40 @@ class YezkaApp(ctk.CTk):
         if fmt == "Añadir solo metadatos":
             return pure_name
             
-        sep = self.meta_separator
-        if sep == "Espacio en blanco":
-            sep = " "
-            
         kn = ky.replace(" ", "").upper().replace("MAJOR", "MAJ").replace("MINOR", "MIN") if ky else ""
+        pt = []
         b_name = pure_name
-        
-        res = b_name
-        
         if fmt == "►KEY ►BPM - TITULO":
-            parts = []
-            if kn: parts.append(f"{sep}{kn}")
-            if bp: parts.append(f"{sep}{bp}")
-            if parts: res = "".join(parts) + "-" + b_name
+            if kn: pt.append(kn)
+            if bp: pt.append(bp)
+            pt.append(b_name)
         elif fmt == "►BPM ►KEY - TITULO":
-            parts = []
-            if bp: parts.append(f"{sep}{bp}")
-            if kn: parts.append(f"{sep}{kn}")
-            if parts: res = "".join(parts) + "-" + b_name
+            if bp: pt.append(bp)
+            if kn: pt.append(kn)
+            pt.append(b_name)
         elif fmt == "►BPM - TITULO":
-            if bp: res = f"{sep}{bp}-{b_name}"
+            if bp: pt.append(bp)
+            pt.append(b_name)
         elif fmt == "►KEY - TITULO":
-            if kn: res = f"{sep}{kn}-{b_name}"
+            if kn: pt.append(kn)
+            pt.append(b_name)
         elif fmt == "TITULO - ◄BPM ◄KEY":
-            parts = []
-            if bp: parts.append(f"{sep}{bp}")
-            if kn: parts.append(f"{sep}{kn}")
-            if parts: res = b_name + "-" + "".join(parts)
+            pt.append(b_name)
+            if bp: pt.append(bp)
+            if kn: pt.append(kn)
         elif fmt == "TITULO - ◄KEY ◄BPM":
-            parts = []
-            if kn: parts.append(f"{sep}{kn}")
-            if bp: parts.append(f"{sep}{bp}")
-            if parts: res = b_name + "-" + "".join(parts)
+            pt.append(b_name)
+            if kn: pt.append(kn)
+            if bp: pt.append(bp)
         elif fmt == "TITULO - ◄BPM":
-            if bp: res = b_name + f"-{sep}{bp}"
+            pt.append(b_name)
+            if bp: pt.append(bp)
         elif fmt == "TITULO - ◄KEY":
-            if kn: res = b_name + f"-{sep}{kn}"
+            pt.append(b_name)
+            if kn: pt.append(kn)
             
-        if res.startswith(" "): res = res.lstrip()
-        
-        return res
+        # FIX v0.9.37: Lógica original restaurada con guiones para los metadatos
+        return "-".join([str(x) for x in pt if x])
 
     def draw_headers(self):
         for widget in self.frame_headers.winfo_children(): widget.destroy()
@@ -1268,6 +1228,7 @@ class YezkaApp(ctk.CTk):
             self.file_data[path]['pure_name'] = new_pure
             self.file_data[path]['orig_name'] = raw_name 
             
+        # FIX v0.9.37: Ahora sí le decimos a la app que el archivo fue modificado manualmente en esta sesión
         self.file_data[path]['is_staged'] = True
         
         fmt = self.format_var.get()
@@ -1341,6 +1302,8 @@ class YezkaApp(ctk.CTk):
                 w['name'].delete(0, 'end'); w['name'].insert(0, data['name']); w['name'].set_initial_state() 
                 
                 is_staged = data['estado'] == COLOR_MODIFIED
+                
+                # FIX v0.9.37: Distinguir entre archivos ya formateados y archivos que se acaban de modificar (staged)
                 highlight = data['is_custom'] or data['is_formatted'] or is_staged
                 
                 w['name'].configure(text_color=TEXT_PURE if highlight else TEXT_PALE)
@@ -1358,6 +1321,8 @@ class YezkaApp(ctk.CTk):
                 
                 w['estado'].configure(text_color=data['estado'])
                 
+                # El botón Undo SOLO se enciende si el archivo fue modificado manualmente en ESTA sesión (is_staged o is_custom real)
+                # is_formatted (que viene de la carga) NO lo enciende.
                 can_undo = data['is_custom'] or data.get('is_staged', False)
                 if can_undo: 
                     w['btn_undo'].configure(state="normal", image=self.ic_undo_accent if data['is_custom'] else self.ic_undo_red)
@@ -1765,6 +1730,7 @@ class YezkaApp(ctk.CTk):
     def process_next_conversion(self, file_list, index):
         if index >= len(file_list):
             self.is_wav_all_applied = True
+            # FIX v0.9.37: Fase de limpieza post-conversión masiva para evitar los Fantasmas WAV
             self.show_loading("ACTUALIZANDO\nCARPETA...")
             self.after(1500, self._finalize_mass_conversion)
             return
@@ -1775,6 +1741,7 @@ class YezkaApp(ctk.CTk):
         self.after(50, lambda: self.process_next_conversion(file_list, index + 1))
         
     def _finalize_mass_conversion(self):
+        # Limpiamos archivos fantasmas directamente validando si existen en el disco
         existing_paths = []
         for p in self.loaded_paths:
             if os.path.exists(p):
@@ -1788,10 +1755,6 @@ class YezkaApp(ctk.CTk):
         self.update_wav_button_state()
         self.refresh_virtual_grid()
         self.loading_base_msg = "¡TODOS\nCONVERTIDOS!"
-        
-        if self.tabs.get().startswith("CARPETA INTELIGENTE"):
-            self._start_smart_observer()
-            
         self.hide_loading()
 
     def restore_all_formats(self):
@@ -1805,8 +1768,6 @@ class YezkaApp(ctk.CTk):
             self.is_wav_all_applied = False
             self.update_wav_button_state()
             return
-            
-        self.stop_smart_folder()
         self.show_loading(f"RESTAURANDO\n0/{len(to_restore)}")
         self.process_next_restore(to_restore, 0)
 
@@ -1815,8 +1776,6 @@ class YezkaApp(ctk.CTk):
             self.is_wav_all_applied = False
             self.update_wav_button_state(); self.refresh_virtual_grid()
             self.loading_base_msg = "¡FORMATOS\nRESTAURADOS!"
-            if self.tabs.get().startswith("CARPETA INTELIGENTE"):
-                self._start_smart_observer()
             self.hide_loading()
             return
         p = file_list[index]
@@ -1882,8 +1841,7 @@ class YezkaApp(ctk.CTk):
         if not messagebox.askyesno("Confirmar", f"Se aplicarán a {len(paths_to_process)} archivos. ¿Continuar?"): return
 
         self.stop_audio(force_release=True) 
-        
-        self.stop_smart_folder()
+
         self.show_loading("GUARDANDO\nMETADATOS...")
         threading.Thread(target=self._thread_run_rename_all, args=(paths_to_process,), daemon=True).start()
 
@@ -1952,9 +1910,22 @@ class YezkaApp(ctk.CTk):
                 
             self.after(3000, lambda op=old_p, np=new_p: self._clear_shield(op, np))
             
-        self.show_loading("ACTUALIZANDO\nCARPETA...")
-        self.after(1500, self._finalize_mass_conversion)
-
+        # FIX v0.9.37: Limpieza final de fantasmas que hayan quedado flotando
+        existing_paths = []
+        for p in self.loaded_paths:
+            if os.path.exists(p):
+                existing_paths.append(p)
+            else:
+                self.file_data.pop(p, None)
+                self.session_history.pop(p, None)
+                self.metadata_cache.pop(p, None)
+        self.loaded_paths = existing_paths
+            
+        if rc > 0: self.log_message(f"> {rc} archivos guardados y blindados.")
+        self.refresh_virtual_grid()
+        self.loading_base_msg = "¡METADATOS\nGUARDADOS!"
+        self.hide_loading()
+        
     def _clear_shield(self, p1, p2):
         self.watchdog_shield.discard(p1)
         self.watchdog_shield.discard(p2)
