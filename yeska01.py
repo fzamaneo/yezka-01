@@ -9,8 +9,11 @@ import urllib.parse
 import re
 import threading
 import time
-import json 
+import json
 import tempfile
+import struct
+import array
+import math
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -41,6 +44,7 @@ ctk.set_appearance_mode("dark")
 
 FONT_MONO = ("Menlo", 12)  
 FONT_MONO_BOLD = ("Menlo", 12, "bold")
+FONT_MONO_BOLD_SMALL = ("Menlo", 9, "bold")
 FONT_TITLE = ("Menlo", 17, "bold")
 FONT_NAME = ("Menlo", 14, "normal") 
 
@@ -156,7 +160,7 @@ class YezkaApp(ctk.CTk):
         super().__init__()
         self._init_done = False 
         
-        self.title("YEZKA-01 - v0.9.42 (Stable Edition + Aligned Tabs)") 
+        self.title("YEZKA-01 - v0.9.46 (Definitive Tab Engine & Smart Extractor)") 
         self.geometry("1134x780") 
         self.resizable(True, True)
         self.configure(fg_color=BG_MAIN)
@@ -175,6 +179,7 @@ class YezkaApp(ctk.CTk):
         self.pygame_active = PYGAME_AVAILABLE
         self.current_playing_path = None
         self.is_playing = False
+        self.is_paused = False
         self.current_track_length = 0.0
         self.playback_offset = 0.0
         self.is_dragging_progress = False
@@ -238,14 +243,19 @@ class YezkaApp(ctk.CTk):
         self.ic_undo_red = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.ARROW_BACK_UP, color=COLOR_MODIFIED, size=24), size=(18, 18))
         self.ic_settings = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.SETTINGS, color=TEXT_NORMAL, size=24), size=(22, 22))
         self.ic_folder = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.FOLDER, color=TEXT_NORMAL, size=24), size=(18, 18))
+        folder_plus_icon = getattr(OutlineIcon, "FOLDER_PLUS", OutlineIcon.FOLDER)
+        self.ic_folder_plus = ctk.CTkImage(light_image=TablerIcons.load(folder_plus_icon, color=TEXT_NORMAL, size=24), size=(18, 18))
         self.ic_play = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.PLAYER_PLAY, color=ACCENT, size=24), size=(16, 16))
+        self.ic_pause = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.PLAYER_PAUSE, color=ACCENT, size=24), size=(16, 16))
         self.ic_stop = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.PLAYER_STOP, color=COLOR_MODIFIED, size=24), size=(16, 16))
         self.ic_volume = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.VOLUME, color=TEXT_MUTED, size=24), size=(18, 18))
+        from PIL import ImageTk
+        self._ic_wf_idle = ImageTk.PhotoImage(TablerIcons.load(OutlineIcon.HEADPHONES_OFF, color="#333333", size=22))
 
         self.frame_top = ctk.CTkFrame(self, fg_color=BG_MAIN, corner_radius=0)
         self.frame_top.pack(side="top", fill="x", padx=20, pady=(15, 5))
 
-        self.label_title = ctk.CTkLabel(self.frame_top, text="YEZKA-01  //  v0.9.42", font=FONT_TITLE, text_color=TEXT_NORMAL)
+        self.label_title = ctk.CTkLabel(self.frame_top, text="YEZKA-01  //  v0.9.46", font=FONT_TITLE, text_color=TEXT_NORMAL)
         self.label_title.pack(side="left")
 
         self.btn_settings = ctk.CTkButton(self.frame_top, text="", image=self.ic_settings, width=30, height=30, fg_color=BG_MAIN, hover_color=BG_HOVER, command=self.open_general_settings)
@@ -255,12 +265,12 @@ class YezkaApp(ctk.CTk):
         self.frame_toolbar = ctk.CTkFrame(self, fg_color=BG_MAIN, corner_radius=0) 
         self.frame_toolbar.pack(side="top", pady=(5, 10), padx=20, fill="x")
         
-        self.frame_tabs_container = ctk.CTkFrame(self.frame_toolbar, fg_color=BG_MAIN, corner_radius=0)
-        self.frame_tabs_container.pack(side="left", fill="y", expand=False)
+        # FIX v0.9.45: pack_propagate(False) para blindar el contenedor de la zona negra
+        self.frame_tabs_container = ctk.CTkFrame(self.frame_toolbar, fg_color=BG_MAIN, corner_radius=0, height=85)
+        self.frame_tabs_container.pack_propagate(False)
+        self.frame_tabs_container.pack(side="left", fill="both", expand=True)
         
-        self.tabs = ctk.CTkTabview(self.frame_tabs_container, height=85, fg_color="transparent", bg_color="transparent", segmented_button_fg_color=BG_ELEMENT, segmented_button_selected_color="#2A2A2A", segmented_button_unselected_color=BG_ELEMENT, text_color=TEXT_NORMAL, command=self.on_tab_change)
-        self.tabs.pack(side="left", fill="both", expand=True)
-
+        self.tabs = None
         self._build_tabs_completely(startup=True)
 
         self.frame_global_tools = ctk.CTkFrame(self.frame_toolbar, fg_color="transparent")
@@ -299,18 +309,32 @@ class YezkaApp(ctk.CTk):
         if self.show_log_default:
             self.textbox_log.pack(side="top", fill="x")
 
-        self.frame_player = ctk.CTkFrame(self, fg_color=BG_ELEMENT, corner_radius=RADIUS, height=44)
+        self.frame_player = ctk.CTkFrame(self, fg_color=BG_ELEMENT, corner_radius=RADIUS, height=88)
         self.frame_player.pack(side="bottom", fill="x", padx=20, pady=(5, 10))
         self.frame_player.pack_propagate(False)
+
+        self.frame_waveform_row = ctk.CTkFrame(self.frame_player, fg_color="transparent", height=30)
+        self.frame_waveform_row.pack(side="top", fill="x", padx=15, pady=(6, 0))
+        self.frame_waveform_row.pack_propagate(False)
+
+        self.waveform_canvas = tk.Canvas(self.frame_waveform_row, height=30, bg=BG_ELEMENT, highlightthickness=0, bd=0)
+        self.waveform_canvas.pack(fill="both", expand=True)
+        self.waveform_canvas.bind("<Button-1>", self.on_waveform_click)
+        self.waveform_canvas.bind("<Configure>", self._on_waveform_configure)
+        self.waveform_data = []
+
+        self.frame_controls_row = ctk.CTkFrame(self.frame_player, fg_color="transparent")
+        self.frame_controls_row.pack(side="bottom", fill="x", padx=0, pady=(2, 6))
+
+        self.lbl_player_track = ctk.CTkLabel(self.frame_controls_row, text="▪ REPRODUCTOR EN ESPERA", font=FONT_MONO, text_color=TEXT_MUTED, width=220, anchor="w")
+        self.lbl_player_track.pack(side="left", padx=(15, 10), pady=0)
+        self.lbl_player_track.bind("<Button-1>", lambda e: self._player_bar_toggle())
         
-        self.lbl_player_track = ctk.CTkLabel(self.frame_player, text="▪ REPRODUCTOR EN ESPERA", font=FONT_MONO, text_color=TEXT_MUTED, width=220, anchor="w")
-        self.lbl_player_track.pack(side="left", padx=(15, 10), pady=10)
-        
-        self.lbl_time = ctk.CTkLabel(self.frame_player, text="00:00 / 00:00", font=FONT_MONO, text_color=TEXT_MUTED, width=100)
+        self.lbl_time = ctk.CTkLabel(self.frame_controls_row, text="00:00 / 00:00", font=FONT_MONO, text_color=TEXT_MUTED, width=100)
         self.lbl_time.pack(side="left", padx=(0, 10))
-        
+
         self.slider_progress = ctk.CTkSlider(
-            self.frame_player, 
+            self.frame_controls_row, 
             from_=0, to=100, 
             height=6, 
             command=self.on_progress_drag, 
@@ -325,11 +349,11 @@ class YezkaApp(ctk.CTk):
         self.slider_progress.bind("<ButtonPress-1>", self.on_progress_press)
         self.slider_progress.bind("<ButtonRelease-1>", self.on_progress_release)
         
-        self.lbl_vol_icon = ctk.CTkLabel(self.frame_player, text="", image=self.ic_volume)
-        self.lbl_vol_icon.pack(side="left", padx=(0, 5), pady=10)
-        
+        self.lbl_vol_icon = ctk.CTkLabel(self.frame_controls_row, text="", image=self.ic_volume)
+        self.lbl_vol_icon.pack(side="left", padx=(0, 5), pady=0)
+
         self.slider_vol = ctk.CTkSlider(
-            self.frame_player, 
+            self.frame_controls_row, 
             from_=0, to=1, 
             width=80, height=6, 
             command=self.set_volume, 
@@ -348,14 +372,15 @@ class YezkaApp(ctk.CTk):
             self.slider_vol.configure(state="disabled")
             self.slider_progress.configure(state="disabled")
 
-        self.btn_run = ctk.CTkButton(self.frame_player, text="APLICAR CAMBIOS", height=28, command=self.run_rename_all, fg_color=BG_MAIN, text_color=TEXT_MUTED, state="disabled", corner_radius=RADIUS, font=FONT_MONO_BOLD, border_width=1, border_color="#222")
-        self.btn_run.pack(side="right", padx=5, pady=6)
+        self.btn_run = ctk.CTkButton(self.frame_controls_row, text="APLICAR CAMBIOS", height=28, command=self.run_rename_all, fg_color=BG_MAIN, text_color=TEXT_MUTED, state="disabled", corner_radius=RADIUS, font=FONT_MONO_BOLD, border_width=1, border_color="#222")
+        self.btn_run.pack(side="right", padx=5, pady=0)
 
         self.table_container = ctk.CTkFrame(self, fg_color=BG_MAIN, corner_radius=0)
         self.table_container.pack(side="top", fill="both", expand=True, padx=20, pady=(0, 5))
 
         self.frame_headers = ctk.CTkFrame(self.table_container, fg_color="transparent", corner_radius=0)
         self.frame_headers.pack(fill="x", pady=(0, 2), padx=(0, 16)) 
+        self.label_loaded_count = None
         
         self.scroll_container = ctk.CTkFrame(self.table_container, fg_color="transparent")
         self.scroll_container.pack(fill="both", expand=True, pady=(0, 0)) 
@@ -401,15 +426,8 @@ class YezkaApp(ctk.CTk):
         self.draw_headers()
         self.build_virtual_rows()
         
-        if self.default_tab_pref in self.smart_tab_widgets:
-            self.tabs.set(self.default_tab_pref)
-        elif self.default_tab_pref == "MODO MANUAL":
-            self.tabs.set("MODO MANUAL")
-        else:
-            self.tabs.set("CARPETA INTELIGENTE")
-            
         self._init_done = True 
-        self.on_tab_change()
+        self.after(50, self._activate_initial_tab)
         
         if not ESSENTIA_AVAILABLE:
             self.after(500, lambda: self.log_message("> [ATENCIÓN] Essentia no detectado. Instálalo con: pip install essentia"))
@@ -417,42 +435,104 @@ class YezkaApp(ctk.CTk):
         self.after(500, self._check_default_folder_startup)
         self.focus_force() 
 
-    def _fix_tab_alignment(self):
-        """Inyecta una alineación estricta a la izquierda para evitar huecos en el diseño de pestañas"""
+    def _align_tabs_left(self):
+        """Fija la barra de pestañas al borde izquierdo incluso después de recrear el TabView."""
+        if not self.tabs:
+            return
+
         try:
-            self.tabs._segmented_button.grid_configure(sticky="w")
-        except:
+            self.tabs.configure(anchor="nw")
+        except Exception:
+            pass
+
+        try:
+            self.tabs._segmented_button.grid_configure(sticky="w", padx=0)
+        except Exception:
+            pass
+
+    def _resolve_startup_tab(self):
+        if self.default_tab_pref in self.smart_tab_widgets:
+            return self.default_tab_pref
+        if self.default_tab_pref == "MODO MANUAL":
+            return "MODO MANUAL"
+        return "CARPETA INTELIGENTE"
+
+    def _activate_initial_tab(self):
+        if not self.tabs:
+            return
+
+        try:
+            startup_tab = self._resolve_startup_tab()
+            self.tabs.set(startup_tab)
+            self._align_tabs_left()
+            self.update_idletasks()
+            self.on_tab_change()
+        except Exception as e:
+            self.log_message(f"> Error al activar la pestaña inicial: {e}")
+
+    def _style_add_tab_button(self):
+        if not self.tabs:
+            return
+
+        try:
+            add_button = self.tabs._segmented_button._buttons_dict.get("+")
+            if add_button:
+                add_button.configure(text="", image=self.ic_folder_plus, width=30)
+        except Exception:
             pass
 
     def _build_tabs_completely(self, startup=False):
-        """Mantiene MODO MANUAL fijo y solo manipula las pestañas de carpetas para evitar problemas de layout"""
-        if startup:
-            self.tab_local = self.tabs.add("MODO MANUAL")
-            self._build_local_tab_ui()
-        else:
-            for tab_name in list(self.smart_tab_widgets.keys()):
-                try: self.tabs.delete(tab_name)
-                except: pass
-            try: self.tabs.delete("+")
+        """Fix Definitivo: Borra y recrea el TabView por completo para forzar un repintado seguro y evitar zonas negras"""
+        active_tab = self.default_tab_pref if startup else "CARPETA INTELIGENTE"
+        
+        if not startup:
+            try: active_tab = self.tabs.get()
             except: pass
+            
+            if self.tabs:
+                self.tabs.destroy()
+                self.tabs = None
+                
+        self.tabs = ctk.CTkTabview(self.frame_tabs_container, height=85, fg_color="transparent", bg_color="transparent", segmented_button_fg_color=BG_ELEMENT, segmented_button_selected_color="#2A2A2A", segmented_button_unselected_color=BG_ELEMENT, text_color=TEXT_NORMAL, command=self.on_tab_change)
+        self.tabs.pack(side="left", fill="both", expand=True)
+        self._align_tabs_left()
 
         self.smart_tab_widgets.clear()
+        
+        self.tab_local = self.tabs.add("MODO MANUAL")
+        self._build_local_tab_ui()
         
         for i, path in enumerate(self.smart_folders):
             self.add_smart_tab_ui(i, path)
             
         self.tabs.add("+")
+        self._style_add_tab_button()
         
-        # Forzar alineación izquierda para asegurar que no quede hueco
-        self._fix_tab_alignment()
+        if not startup:
+            if active_tab == "+" or active_tab not in self.smart_tab_widgets and active_tab != "MODO MANUAL":
+                active_tab = f"CARPETA INTELIGENTE {len(self.smart_folders)}" if len(self.smart_folders) > 1 else "CARPETA INTELIGENTE"
+            
+            self.update_idletasks()
+            self.after(50, lambda t=active_tab: self._delayed_tab_set(t))
+        else:
+            self.tabs.set(self._resolve_startup_tab())
+            self._align_tabs_left()
+
+    def _delayed_tab_set(self, tab_name):
+        """Retardo microscópico para que macOS procese la geometría antes de mostrar el contenido"""
+        try:
+            self.tabs.set(tab_name)
+            self._align_tabs_left()
+            self.update_idletasks()
+            self.on_tab_change()
+        except Exception as e:
+            self.log_message(f"> Error visual al cambiar pestaña: {e}")
 
     def _build_local_tab_ui(self):
         for w in self.tab_local.winfo_children(): w.destroy()
         
         self.frame_local_top = ctk.CTkFrame(self.tab_local, fg_color="transparent")
         self.frame_local_top.pack(fill="x", pady=(5, 2))
-        self.frame_local_bot = ctk.CTkFrame(self.tab_local, fg_color="transparent")
-        self.frame_local_bot.pack(fill="x")
 
         self.btn_folder = ctk.CTkButton(self.frame_local_top, text="SELECCIONAR CARPETA", command=self.select_folder, fg_color=BG_ELEMENT, hover_color="#1E1E1E", text_color=TEXT_NORMAL, corner_radius=RADIUS, font=FONT_MONO_BOLD, border_width=0, width=160, height=28)
         self.btn_folder.pack(side="left", padx=(0, 10))
@@ -460,17 +540,12 @@ class YezkaApp(ctk.CTk):
         self.btn_files = ctk.CTkButton(self.frame_local_top, text="SELECCIONAR ARCHIVO", command=self.select_files, fg_color=BG_ELEMENT, hover_color="#1E1E1E", text_color=TEXT_NORMAL, corner_radius=RADIUS, font=FONT_MONO_BOLD, border_width=0, width=160, height=28)
         self.btn_files.pack(side="left", padx=(0, 10))
 
-        num_loaded = len(self.loaded_paths)
-        txt_loaded = f"ARCHIVOS CARGADOS: {num_loaded}" if num_loaded > 0 else "NINGÚN ARCHIVO CARGADO"
-        self.label_loaded = ctk.CTkLabel(self.frame_local_top, text=txt_loaded, font=FONT_MONO, text_color=TEXT_NORMAL if num_loaded > 0 else TEXT_MUTED)
-        self.label_loaded.pack(side="left", padx=(10, 0))
-
-        self.btn_open_local_dir = ctk.CTkButton(self.frame_local_bot, text="", image=self.ic_folder, width=24, height=24, fg_color="transparent", hover_color=BG_HOVER, command=lambda: self.open_finder(self.current_local_dir))
-        self.btn_open_local_dir.pack(side="left", padx=(0, 5))
+        self.btn_open_local_dir = ctk.CTkButton(self.frame_local_top, text="", image=self.ic_folder, width=24, height=24, fg_color="transparent", hover_color=BG_HOVER, command=lambda: self.open_finder(self.current_local_dir))
+        self.btn_open_local_dir.pack(side="left", padx=(4, 5))
         ToolTip(self.btn_open_local_dir, "Abrir carpeta en Finder")
         
         txt_path = f"Ruta: {self.current_local_dir}" if self.current_local_dir else "Ruta: Ninguna"
-        self.lbl_local_path = ctk.CTkLabel(self.frame_local_bot, text=txt_path, font=FONT_MONO, text_color=TEXT_DIM)
+        self.lbl_local_path = ctk.CTkLabel(self.frame_local_top, text=txt_path, font=FONT_MONO, text_color=TEXT_DIM)
         self.lbl_local_path.pack(side="left")
 
     def add_smart_tab_ui(self, index, path):
@@ -481,17 +556,17 @@ class YezkaApp(ctk.CTk):
         frame.pack(fill="both", expand=True, pady=(5,0))
         
         btn_change = ctk.CTkButton(frame, text="CAMBIAR RUTA", command=lambda idx=index: self.change_smart_folder(idx), fg_color=BG_ELEMENT, hover_color="#1E1E1E", text_color=TEXT_NORMAL, corner_radius=RADIUS, font=FONT_MONO_BOLD, border_width=0, width=110, height=28)
-        btn_change.pack(side="left", padx=(0, 15))
+        btn_change.pack(side="left", padx=(0, 8))
         ToolTip(btn_change, "Selecciona una nueva carpeta para monitorear automáticamente")
-        
-        btn_open = ctk.CTkButton(frame, text="", image=self.ic_folder, width=24, height=24, fg_color="transparent", hover_color=BG_HOVER, command=lambda idx=index: self.open_finder(self.smart_folders[idx]))
-        btn_open.pack(side="left", padx=(0, 5))
-        ToolTip(btn_open, "Abrir Carpeta Inteligente")
-        
+
         if index > 0:
-            btn_del = ctk.CTkButton(frame, text="X", width=18, height=18, fg_color=COLOR_MODIFIED, hover_color="#8B0000", text_color=TEXT_PURE, font=("Menlo", 10, "bold"), corner_radius=RADIUS, command=lambda idx=index: self.remove_smart_folder(idx))
-            btn_del.pack(side="left", padx=(10, 5))
+            btn_del = ctk.CTkButton(frame, text="QUITAR CARPETA", command=lambda idx=index: self.remove_smart_folder(idx), fg_color=BG_ELEMENT, hover_color="#3a1010", text_color=COLOR_MODIFIED, corner_radius=RADIUS, font=FONT_MONO_BOLD, border_width=1, border_color=COLOR_MODIFIED, width=120, height=23)
+            btn_del.pack(side="left", padx=(0, 15))
             ToolTip(btn_del, "Quitar esta Carpeta Inteligente")
+
+        btn_open = ctk.CTkButton(frame, text="", image=self.ic_folder, width=24, height=24, fg_color="transparent", hover_color=BG_HOVER, command=lambda idx=index: self.open_finder(self.smart_folders[idx]))
+        btn_open.pack(side="left", padx=(0 if index == 0 else 0, 5))
+        ToolTip(btn_open, "Abrir Carpeta Inteligente")
             
         lbl_path = ctk.CTkLabel(frame, text=f"Ruta: {path}", font=FONT_MONO, text_color=TEXT_DIM, anchor="w")
         lbl_path.pack(side="left", fill="x", expand=True, padx=(5 if index == 0 else 0, 0))
@@ -511,18 +586,7 @@ class YezkaApp(ctk.CTk):
         if d:
             self.smart_folders.append(d)
             self.save_config()
-            
-            try: self.tabs.delete("+")
-            except: pass
-            
-            idx = len(self.smart_folders) - 1
-            self.add_smart_tab_ui(idx, d)
-            self.tabs.add("+")
-            
-            tab_name = f"CARPETA INTELIGENTE {idx+1}"
-            self.tabs.set(tab_name)
-            self.update_idletasks()
-            self.on_tab_change()
+            self.after(10, lambda: self._build_tabs_completely(startup=False))
         else:
             if hasattr(self, 'last_active_tab') and self.last_active_tab != "+":
                 self.tabs.set(self.last_active_tab)
@@ -534,14 +598,7 @@ class YezkaApp(ctk.CTk):
             self.stop_smart_folder()
             del self.smart_folders[idx]
             self.save_config()
-            
-            self.tabs.set("MODO MANUAL")
-            self.update_idletasks()
-            
-            self._build_tabs_completely(startup=False)
-            
-            self.tabs.set("CARPETA INTELIGENTE")
-            self.on_tab_change()
+            self.after(10, lambda: self._build_tabs_completely(startup=False))
 
     def _check_default_folder_startup(self):
         default_folder = self.smart_folders[0]
@@ -555,7 +612,7 @@ class YezkaApp(ctk.CTk):
             self.first_run_completed = True
             self.save_config()
             
-            if self.active_smart_path == default_folder and self.tabs.get() == "CARPETA INTELIGENTE":
+            if self.active_smart_path == default_folder and self.tabs.get() == "CARPETA INTELIGENTE" and not self.loaded_paths and not self.observer and not self.is_loading:
                 self.start_smart_folder()
         else:
             if not os.path.exists(default_folder) and self.prompt_create_default_folder:
@@ -564,17 +621,43 @@ class YezkaApp(ctk.CTk):
                     try:
                         os.makedirs(default_folder, exist_ok=True)
                         self.log_message("> Carpeta por defecto _ARCHIVOS_YEZKA_ creada.")
-                        if self.active_smart_path == default_folder and self.tabs.get() == "CARPETA INTELIGENTE":
+                        if self.active_smart_path == default_folder and self.tabs.get() == "CARPETA INTELIGENTE" and not self.loaded_paths and not self.observer and not self.is_loading:
                             self.start_smart_folder()
                     except Exception as e:
                         self.log_message(f"> Error al crear carpeta por defecto: {e}")
 
     def on_format_change(self, new_fmt):
+        self._sync_visible_rows_to_data()
+
+        staged_count = 0
         for path, data in self.file_data.items():
             if new_fmt == "Añadir solo metadatos":
-                data['name'] = data['orig_name']
+                target_name = data['orig_name']
             else:
-                data['name'] = self._build_formatted_name(data['pure_name'], data['bpm'], data['key'], new_fmt)
+                target_name = self._build_formatted_name(data['pure_name'], data['bpm'], data['key'], new_fmt)
+
+            saved_bpm, saved_key = self.read_metadata(path)
+            current_disk_name = os.path.splitext(os.path.basename(path))[0]
+            pending_name = target_name != current_disk_name
+            pending_metadata = data['bpm'].strip() != saved_bpm.strip() or data['key'].strip() != saved_key.strip()
+
+            data['name'] = target_name
+
+            if pending_name or pending_metadata:
+                data['estado'] = COLOR_MODIFIED
+                data['is_staged'] = True
+                staged_count += 1
+            else:
+                data['estado'] = COLOR_SAVED if (data['is_custom'] or data['is_formatted']) else TEXT_MUTED
+                data['is_staged'] = False
+
+        if self.file_data:
+            if staged_count > 0:
+                self.log_message(f"> Formato preparado para aplicar en {staged_count} archivos.")
+            else:
+                self.log_message("> El formato seleccionado ya coincide con los archivos cargados.")
+
+        self.update_apply_button_state()
         self.refresh_virtual_grid()
 
     def toggle_log(self):
@@ -584,6 +667,215 @@ class YezkaApp(ctk.CTk):
         else:
             self.btn_toggle_log.configure(text="+")
             self.textbox_log.pack_forget()
+
+    def _raw_to_samples(self, raw, sampwidth, n_channels, big_endian=False):
+        import numpy as np
+        bo = '>' if big_endian else '<'
+        if sampwidth == 1:
+            s = np.frombuffer(raw, dtype='uint8').astype(np.float32) - 128.0
+        elif sampwidth == 2:
+            s = np.frombuffer(raw, dtype=f'{bo}i2').astype(np.float32)
+        elif sampwidth == 3:
+            n = len(raw) // 3
+            b = np.frombuffer(raw[:n*3], dtype='uint8').reshape(-1, 3)
+            if big_endian:
+                s = (b[:,0].astype(np.int32)<<16) | (b[:,1].astype(np.int32)<<8) | b[:,2].astype(np.int32)
+            else:
+                s = b[:,0].astype(np.int32) | (b[:,1].astype(np.int32)<<8) | (b[:,2].astype(np.int32)<<16)
+            s = np.where(s >= 0x800000, s - 0x1000000, s).astype(np.float32)
+        elif sampwidth == 4:
+            try:
+                s = np.frombuffer(raw, dtype=f'{bo}f4').astype(np.float32)
+                if np.max(np.abs(s)) > 1.5:
+                    raise ValueError
+            except Exception:
+                s = np.frombuffer(raw, dtype=f'{bo}i4').astype(np.float32)
+        else:
+            return None
+        if n_channels > 1:
+            s = s[:len(s) - len(s) % n_channels].reshape(-1, n_channels).mean(axis=1)
+        return s
+
+    def _generate_waveform(self, filepath, num_bars=300):
+        try:
+            import numpy as np
+            ext = os.path.splitext(filepath)[1].lower()
+            samples = None
+
+            if ext == '.wav':
+                import wave as wave_mod
+                with wave_mod.open(filepath, 'rb') as wf:
+                    ch, sw, nf = wf.getnchannels(), wf.getsampwidth(), wf.getnframes()
+                    raw = wf.readframes(nf)
+                samples = self._raw_to_samples(raw, sw, ch, big_endian=False)
+
+            elif ext in ('.aiff', '.aif'):
+                import aifc as aifc_mod
+                with aifc_mod.open(filepath, 'rb') as wf:
+                    ch, sw, nf = wf.getnchannels(), wf.getsampwidth(), wf.getnframes()
+                    raw = wf.readframes(nf)
+                samples = self._raw_to_samples(raw, sw, ch, big_endian=True)
+
+            else:
+                temp_wav = os.path.join(tempfile.gettempdir(), "yeska_wf_temp.wav")
+                converted = False
+
+                # Strategy 1: afconvert (macOS built-in, no extra deps)
+                try:
+                    result = subprocess.run(
+                        ['afconvert', '-f', 'WAVE', '-d', 'LEI16', '-c', '1', filepath, temp_wav],
+                        capture_output=True, timeout=30
+                    )
+                    converted = result.returncode == 0
+                except Exception:
+                    pass
+
+                # Strategy 2: pydub fallback
+                if not converted:
+                    try:
+                        from pydub import AudioSegment
+                        seg = AudioSegment.from_file(filepath).set_channels(1)
+                        seg.export(temp_wav, format="wav")
+                        converted = True
+                    except ImportError:
+                        pass
+                    except Exception as e:
+                        self.after(0, lambda err=e: self.log_message(f"> [WF] Error convirtiendo {os.path.basename(filepath)}: {err}"))
+                        return []
+
+                if not converted:
+                    self.after(0, lambda: self.log_message(f"> [WF] No se pudo decodificar {os.path.basename(filepath)} (instala pydub o ffmpeg)"))
+                    return []
+
+                import wave as wave_mod
+                with wave_mod.open(temp_wav, 'rb') as wf:
+                    ch, sw, nf = wf.getnchannels(), wf.getsampwidth(), wf.getnframes()
+                    raw = wf.readframes(nf)
+                try: os.remove(temp_wav)
+                except: pass
+                samples = self._raw_to_samples(raw, sw, ch, big_endian=False)
+
+            if samples is None:
+                self.after(0, lambda: self.log_message(f"> [WF] Bit depth no soportado en: {os.path.basename(filepath)}"))
+                return []
+            total = len(samples)
+            if total == 0: return []
+
+            chunk_size = max(1, total // num_bars)
+            trim = chunk_size * num_bars
+            s    = samples[:trim] if trim <= total else np.pad(samples, (0, trim - total))
+            rms  = np.sqrt(np.mean(s.reshape(num_bars, chunk_size) ** 2, axis=1))
+            peak = rms.max()
+            if peak == 0: return [0.0] * num_bars
+            return ((rms / peak) ** 0.6).tolist()
+
+        except Exception as e:
+            self.after(0, lambda err=e: self.log_message(f"> [WF] Error: {err}"))
+            return []
+
+    def _start_waveform_spinner(self):
+        """Show a loading spinner centered on the waveform canvas."""
+        self._wf_spinner_active = True
+        self._wf_spinner_idx = 0
+        self._animate_waveform_spinner()
+
+    def _animate_waveform_spinner(self):
+        if not getattr(self, '_wf_spinner_active', False):
+            return
+        c = self.waveform_canvas
+        c.delete("all")
+        c.update_idletasks()
+        w = c.winfo_width()
+        h = c.winfo_height()
+        spin_char = self.spinner_frames[self._wf_spinner_idx % len(self.spinner_frames)]
+        c.create_text(w / 2, h / 2, text=f"{spin_char} CARGANDO FORMA DE ONDA", fill=TEXT_MUTED, font=("Menlo", 10))
+        self._wf_spinner_idx += 1
+        self._wf_spinner_loop_id = self.after(80, self._animate_waveform_spinner)
+
+    def _stop_waveform_spinner(self):
+        self._wf_spinner_active = False
+        if getattr(self, '_wf_spinner_loop_id', None):
+            self.after_cancel(self._wf_spinner_loop_id)
+            self._wf_spinner_loop_id = None
+
+    def _on_waveform_ready(self, data, path):
+        self._stop_waveform_spinner()
+        if self.current_playing_path == path and data:
+            self._draw_waveform(data, 0.0)
+
+    def _on_waveform_configure(self, event):
+        """Fires when the canvas is first laid out or resized — guaranteed real dimensions."""
+        w, h = event.width, event.height
+        if w < 2 or h < 2:
+            return
+        if self.waveform_data:
+            ratio = 0.0
+            if self.current_track_length > 0 and self.is_playing:
+                current = self.playback_offset + (pygame.mixer.music.get_pos() / 1000.0 if getattr(self, 'pygame_active', False) else 0)
+                ratio = min(1.0, current / self.current_track_length)
+            self._draw_waveform(progress_ratio=ratio)
+        elif not getattr(self, '_wf_spinner_active', False):
+            self.waveform_canvas.delete("all")
+            self.waveform_canvas.create_image(w // 2, h // 2, image=self._ic_wf_idle, anchor="center")
+
+    def _draw_waveform(self, data=None, progress_ratio=0.0):
+        c = self.waveform_canvas
+        c.delete("all")
+        if data is not None:
+            self.waveform_data = data
+        bars = self.waveform_data
+        if not bars:
+            return
+
+        w = c.winfo_width()
+        h = c.winfo_height()
+        if w < 2 or h < 2:
+            return
+
+        n = len(bars)
+        bar_w = w / n
+        gap = 1
+        mid = h / 2
+
+        for i, amp in enumerate(bars):
+            x0 = i * bar_w
+            x1 = x0 + bar_w - gap
+            if x1 <= x0: x1 = x0 + 0.5
+            bar_h = amp * (mid - 1)
+            color = ACCENT if (i / n) < progress_ratio else "#333333"
+            c.create_rectangle(x0, mid - bar_h, x1, mid + bar_h, fill=color, outline="")
+
+    def on_waveform_click(self, event):
+        """Seek audio when clicking on the waveform."""
+        if not self.is_playing or self.current_track_length <= 0:
+            return
+        c = self.waveform_canvas
+        w = c.winfo_width()
+        if w <= 0:
+            return
+        ratio = event.x / w
+        ratio = max(0.0, min(1.0, ratio))
+        target = ratio * self.current_track_length
+        self.playback_offset = target
+        ext = os.path.splitext(self.current_playing_path)[1].lower()
+        try:
+            if ext == '.mp3':
+                pygame.mixer.music.play()
+                pygame.mixer.music.set_pos(target)
+            else:
+                pygame.mixer.music.play(start=target)
+        except:
+            self.log_message(f"> [AVISO] Búsqueda no admitida en este formato de audio.")
+        self.slider_progress.set(target)
+
+    def _clear_waveform(self):
+        self._stop_waveform_spinner()
+        self.waveform_data = []
+        c = self.waveform_canvas
+        c.delete("all")
+        w, h = c.winfo_width(), c.winfo_height()
+        if w > 2 and h > 2:
+            c.create_image(w // 2, h // 2, image=self._ic_wf_idle, anchor="center")
 
     def get_audio_duration(self, filepath):
         try:
@@ -637,15 +929,46 @@ class YezkaApp(ctk.CTk):
             cur_m, cur_s = divmod(int(current_time), 60)
             tot_m, tot_s = divmod(int(self.current_track_length), 60)
             self.lbl_time.configure(text=f"{cur_m:02d}:{cur_s:02d} / {tot_m:02d}:{tot_s:02d}")
-            
+
+        if self.waveform_data and self.current_track_length > 0:
+            ratio = current_time / self.current_track_length
+            self._draw_waveform(progress_ratio=ratio)
+
         self.row_spinner_idx = (getattr(self, 'row_spinner_idx', 0) + 1) % len(self.spinner_frames)
-        spin_char = self.spinner_frames[self.row_spinner_idx]
         for i in range(self.NUM_VISIBLE_ROWS):
             if i < len(self.visible_paths) and self.visible_paths[i] == self.current_playing_path:
-                self.row_widgets[i]['btn_play'].configure(image=None, text=spin_char, font=("Menlo", 14, "bold"), text_color=ACCENT)
+                self.row_widgets[i]['btn_play'].configure(image=self.ic_pause, text="", text_color=ACCENT)
                 break
                 
         self._progress_loop_id = self.after(100, self._update_progress_loop) 
+
+    def _player_bar_toggle(self):
+        """Play/pause button in the player bar."""
+        if not self.is_playing or not self.current_playing_path:
+            return
+        # Find the row index of the current track and delegate to toggle_play
+        path = self.current_playing_path
+        for i, p in enumerate(self.visible_paths):
+            if p == path:
+                self.toggle_play(i)
+                return
+        # Track not visible in current view — handle pause/resume directly
+        if self.is_paused:
+            pygame.mixer.music.unpause()
+            self.is_paused = False
+            track_name = self.file_data[path]['name']
+            trunc = (track_name[:25] + '..') if len(track_name) > 25 else track_name
+            self.lbl_player_track.configure(text=f"⏸ {trunc}", text_color=ACCENT)
+            self._update_progress_loop()
+        else:
+            pygame.mixer.music.pause()
+            self.is_paused = True
+            track_name = self.file_data[path]['name']
+            trunc = (track_name[:25] + '..') if len(track_name) > 25 else track_name
+            self.lbl_player_track.configure(text=f"▶ {trunc}", text_color=TEXT_MUTED)
+            if getattr(self, '_progress_loop_id', None):
+                self.after_cancel(self._progress_loop_id)
+                self._progress_loop_id = None
 
     def set_volume(self, val):
         if PYGAME_AVAILABLE and getattr(self, 'pygame_active', False):
@@ -671,17 +994,19 @@ class YezkaApp(ctk.CTk):
                 self.pygame_active = False
 
         self.is_playing = False
+        self.is_paused = False
         self.current_playing_path = None
         self.lbl_player_track.configure(text="▪ REPRODUCTOR EN ESPERA", text_color=TEXT_MUTED)
         self.slider_progress.set(0)
         self.lbl_time.configure(text="00:00 / 00:00")
+        self._clear_waveform()
         self.refresh_virtual_grid()
 
     def toggle_play(self, row_idx):
         if not PYGAME_AVAILABLE:
             self.log_message("> [ERROR] Motor de audio no instalado. Ejecuta en terminal: pip install pygame")
             return
-            
+
         path = self.visible_paths[row_idx]
         if not path or not os.path.exists(path): return
 
@@ -691,9 +1016,26 @@ class YezkaApp(ctk.CTk):
             self.pygame_active = True
 
         if self.current_playing_path == path and self.is_playing:
-            self.stop_audio()
+            if self.is_paused:
+                pygame.mixer.music.unpause()
+                self.is_paused = False
+                track_name = self.file_data[path]['name']
+                trunc_name = (track_name[:25] + '..') if len(track_name) > 25 else track_name
+                self.lbl_player_track.configure(text=f"⏸ {trunc_name}", text_color=ACCENT)
+                self.refresh_virtual_grid()
+                self._update_progress_loop()
+            else:
+                pygame.mixer.music.pause()
+                self.is_paused = True
+                track_name = self.file_data[path]['name']
+                trunc_name = (track_name[:25] + '..') if len(track_name) > 25 else track_name
+                self.lbl_player_track.configure(text=f"▶ {trunc_name}", text_color=TEXT_MUTED)
+                if getattr(self, '_progress_loop_id', None):
+                    self.after_cancel(self._progress_loop_id)
+                    self._progress_loop_id = None
+                self.refresh_virtual_grid()
         else:
-            self.stop_audio() 
+            self.stop_audio()
             try:
                 self.current_track_length = self.get_audio_duration(path)
                 self.slider_progress.configure(to=self.current_track_length if self.current_track_length > 0 else 100)
@@ -703,19 +1045,27 @@ class YezkaApp(ctk.CTk):
                 ext = os.path.splitext(path)[1].lower()
                 temp_audio_path = os.path.join(tempfile.gettempdir(), f"yezka_ghost_track{ext}")
                 shutil.copy2(path, temp_audio_path)
-                
+
                 pygame.mixer.music.load(temp_audio_path)
                 pygame.mixer.music.play()
-                
+
                 self.is_playing = True
-                self.current_playing_path = path 
-                
+                self.is_paused = False
+                self.current_playing_path = path
+
                 track_name = self.file_data[path]['name']
                 trunc_name = (track_name[:25] + '..') if len(track_name) > 25 else track_name
-                self.lbl_player_track.configure(text=f"▶ {trunc_name}", text_color=ACCENT)
-                
-                self.refresh_virtual_grid() 
-                self._update_progress_loop() 
+                self.lbl_player_track.configure(text=f"⏸ {trunc_name}", text_color=ACCENT)
+
+                self._start_waveform_spinner()
+
+                def _gen_wf():
+                    data = self._generate_waveform(path)
+                    self.after(0, lambda d=data: self._on_waveform_ready(d, path))
+                threading.Thread(target=_gen_wf, daemon=True).start()
+
+                self.refresh_virtual_grid()
+                self._update_progress_loop()
             except Exception as e:
                 self.log_message(f"> [ERROR AUDIO] No se pudo crear el entorno de reproducción: {e}")
 
@@ -893,15 +1243,16 @@ class YezkaApp(ctk.CTk):
 
     def on_tab_change(self):
         if not hasattr(self, '_init_done') or not self._init_done: return 
-        current_tab = self.tabs.get()
-        self._fix_tab_alignment()
+        
+        try:
+            current_tab = self.tabs.get()
+        except ValueError:
+            return 
+
+        self._align_tabs_left()
         
         if current_tab == "+":
-            if hasattr(self, 'last_active_tab') and self.last_active_tab != "+":
-                self.tabs.set(self.last_active_tab)
-            else:
-                self.tabs.set("CARPETA INTELIGENTE")
-            self.add_new_smart_folder_from_tab()
+            self.after(10, self.add_new_smart_folder_from_tab)
             return
             
         self.last_active_tab = current_tab
@@ -912,9 +1263,10 @@ class YezkaApp(ctk.CTk):
             self.btn_clear.configure(image=self.ic_refresh, command=self.refresh_smart_folder)
             self.tooltip_clear.text = "Forzar escaneo de la Carpeta Inteligente"
             
-            idx = self.smart_tab_widgets[current_tab]['index']
-            self.active_smart_path = self.smart_folders[idx]
-            self.start_smart_folder()
+            if current_tab in self.smart_tab_widgets:
+                idx = self.smart_tab_widgets[current_tab]['index']
+                self.active_smart_path = self.smart_folders[idx]
+                self.start_smart_folder()
         else:
             self.lbl_empty_instruction.configure(text="\n> SELECCIONA CARPETA O ARCHIVO EN LA BARRA SUPERIOR.")
             self.btn_clear.configure(image=self.ic_trash, command=self.clear_all)
@@ -1024,58 +1376,83 @@ class YezkaApp(ctk.CTk):
                 
             self.loaded_paths.remove(filepath)
             self.file_data.pop(filepath, None); self.session_history.pop(filepath, None); self.metadata_cache.pop(filepath, None)
+            self._update_loaded_count_display()
             self.refresh_virtual_grid(); self.update_apply_button_state(); self.update_wav_button_state()
             self.log_message(f"> [SISTEMA] Removido: {os.path.basename(filepath)}")
 
     def _extract_pure_name(self, name, tb, tk):
+        # FIX v0.9.45: Sistema de pelado avanzado que no duplica BPM ni Key jamás.
         if not name: return ""
         res = name.strip()
         
-        for s in ["►", "◄", "=", "+", "-►"]:
-            res = res.replace(s, "")
-        res = res.strip()
-            
         k_n = tk.replace(" ", "").upper().replace("MAJOR", "MAJ").replace("MINOR", "MIN") if tk else ""
         b_n = tb.strip().upper() if tb else ""
+        
+        b_variants = [b_n, f"{b_n} BPM", f"{b_n}BPM"] if b_n else []
+        k_variants = [k_n] if k_n else []
+        tokens = k_variants + b_variants
+        tokens.sort(key=len, reverse=True)
+        
+        strip_chars = "►◄=+- _"
         
         changed = True
         while changed:
             changed = False
-            res_upper = res.upper()
             
-            if k_n:
-                if res_upper.startswith(k_n + "-") or res_upper.startswith(k_n + " -"):
-                    res = res[len(k_n):].lstrip(" -_")
-                    changed = True; continue
-                if res_upper.endswith("-" + k_n) or res_upper.endswith("- " + k_n):
-                    res = res[:-len(k_n)].rstrip(" -_")
-                    changed = True; continue
-                    
-            if b_n:
-                for b_variant in [b_n, f"{b_n} BPM", f"{b_n}BPM"]:
-                    if res_upper.startswith(b_variant + "-") or res_upper.startswith(b_variant + " -"):
-                        res = res[len(b_variant):].lstrip(" -_")
-                        changed = True; break
-                    if res_upper.endswith("-" + b_variant) or res_upper.endswith("- " + b_variant):
-                        res = res[:-len(b_variant)].rstrip(" -_")
-                        changed = True; break
+            for token in tokens:
+                if not token: continue
+                
+                res_clean = res.lstrip(strip_chars)
+                res_clean_upper = res_clean.upper()
+                
+                if res_clean_upper.startswith(token):
+                    after_token_idx = len(token)
+                    if after_token_idx == len(res_clean_upper) or res_clean_upper[after_token_idx] in strip_chars:
+                        res = res_clean[after_token_idx:].lstrip(strip_chars)
+                        changed = True
+                        break
+                        
+                res_clean = res.rstrip(strip_chars)
+                res_clean_upper = res_clean.upper()
+                
+                if res_clean_upper.endswith(token):
+                    before_token_idx = len(res_clean_upper) - len(token) - 1
+                    if before_token_idx < 0 or res_clean_upper[before_token_idx] in strip_chars:
+                        res = res_clean[:before_token_idx + 1].rstrip(strip_chars)
+                        changed = True
+                        break
+                        
+            if changed: continue
             
-            m_k = REGEX_KEY_START.match(res)
-            if m_k: res = m_k.group(2).lstrip(" -_"); changed = True; continue
-            m_b = REGEX_BPM_START.match(res)
-            if m_b: res = m_b.group(2).lstrip(" -_"); changed = True; continue
-            m_ke = REGEX_KEY_END.search(res)
-            if m_ke: res = m_ke.group(1).rstrip(" -_"); changed = True; continue
-            m_be = REGEX_BPM_END.search(res)
-            if m_be: res = m_be.group(1).rstrip(" -_"); changed = True; continue
+            res_clean = res.strip(strip_chars)
             
-        return res.strip()
+            m_k = REGEX_KEY_START.match(res_clean)
+            if m_k: 
+                res = m_k.group(2).lstrip(strip_chars)
+                changed = True; continue
+                
+            m_b = REGEX_BPM_START.match(res_clean)
+            if m_b: 
+                res = m_b.group(2).lstrip(strip_chars)
+                changed = True; continue
+                
+            m_ke = REGEX_KEY_END.search(res_clean)
+            if m_ke: 
+                res = m_ke.group(1).rstrip(strip_chars)
+                changed = True; continue
+                
+            m_be = REGEX_BPM_END.search(res_clean)
+            if m_be: 
+                res = m_be.group(1).rstrip(strip_chars)
+                changed = True; continue
+                
+        return res.strip(strip_chars)
 
     def _build_formatted_name(self, pure_name, bp, ky, fmt):
         if fmt == "Añadir solo metadatos":
             return pure_name
             
-        sep = self.meta_separator
+        sep = getattr(self, 'meta_separator', '►')
         if sep == "Espacio en blanco":
             sep = " "
             
@@ -1083,42 +1460,62 @@ class YezkaApp(ctk.CTk):
         b_name = pure_name
         
         res = b_name
+        prefix_parts = []
+        suffix_parts = []
         
         if fmt == "►KEY ►BPM - TITULO":
-            parts = []
-            if kn: parts.append(f"{sep}{kn}")
-            if bp: parts.append(f"{sep}{bp}")
-            if parts: res = "".join(parts) + "-" + b_name
+            if kn: prefix_parts.append(kn)
+            if bp: prefix_parts.append(bp)
         elif fmt == "►BPM ►KEY - TITULO":
-            parts = []
-            if bp: parts.append(f"{sep}{bp}")
-            if kn: parts.append(f"{sep}{kn}")
-            if parts: res = "".join(parts) + "-" + b_name
+            if bp: prefix_parts.append(bp)
+            if kn: prefix_parts.append(kn)
         elif fmt == "►BPM - TITULO":
-            if bp: res = f"{sep}{bp}-{b_name}"
+            if bp: prefix_parts.append(bp)
         elif fmt == "►KEY - TITULO":
-            if kn: res = f"{sep}{kn}-{b_name}"
+            if kn: prefix_parts.append(kn)
         elif fmt == "TITULO - ◄BPM ◄KEY":
-            parts = []
-            if bp: parts.append(f"{sep}{bp}")
-            if kn: parts.append(f"{sep}{kn}")
-            if parts: res = b_name + "-" + "".join(parts)
+            if bp: suffix_parts.append(bp)
+            if kn: suffix_parts.append(kn)
         elif fmt == "TITULO - ◄KEY ◄BPM":
-            parts = []
-            if kn: parts.append(f"{sep}{kn}")
-            if bp: parts.append(f"{sep}{bp}")
-            if parts: res = b_name + "-" + "".join(parts)
+            if kn: suffix_parts.append(kn)
+            if bp: suffix_parts.append(bp)
         elif fmt == "TITULO - ◄BPM":
-            if bp: res = b_name + f"-{sep}{bp}"
+            if bp: suffix_parts.append(bp)
         elif fmt == "TITULO - ◄KEY":
-            if kn: res = b_name + f"-{sep}{kn}"
+            if kn: suffix_parts.append(kn)
             
-        if res.startswith(" "): res = res.lstrip()
+        if prefix_parts:
+            joined_prefix = sep.join(prefix_parts)
+            if sep in ["►", "-►", "+", "="]: 
+                joined_prefix = sep + joined_prefix
+            res = joined_prefix + " - " + b_name if sep == " " else joined_prefix + "-" + b_name
+            
+        if suffix_parts:
+            joined_suffix = sep.join(suffix_parts)
+            if sep in ["►", "-►", "+", "="]:
+                joined_suffix = sep + joined_suffix
+            res = b_name + " - " + joined_suffix if sep == " " else b_name + "-" + joined_suffix
+            
+        res = res.replace("- -", "-").replace("  ", " ").strip()
+        if res.startswith("-"): res = res[1:].strip()
+        if res.endswith("-"): res = res[:-1].strip()
         
         return res
 
+    def _update_loaded_count_display(self):
+        if not self.label_loaded_count:
+            return
+
+        total = len(self.loaded_paths)
+
+        try:
+            self.label_loaded_count.configure(text=f"(ARCHIVOS CARGADOS: {total})", text_color=TEXT_MUTED)
+        except Exception:
+            pass
+
     def draw_headers(self):
         for widget in self.frame_headers.winfo_children(): widget.destroy()
+        self.label_loaded_count = None
         
         for i, w in enumerate(self.COL_WIDTHS): 
             self.frame_headers.grid_columnconfigure(i, minsize=w + 10, weight=0)
@@ -1130,7 +1527,36 @@ class YezkaApp(ctk.CTk):
             hf.grid_propagate(False)
             hf.grid(row=0, column=i, sticky="" if text == "ST" else "w", padx=5) 
             
-            if text and text != "ACCIONES":
+            if text == "NOMBRE DE ARCHIVOS":
+                header_content = ctk.CTkFrame(hf, fg_color="transparent")
+                header_content.pack(fill="both", expand=True)
+
+                arrow = " ↑" if self.current_sort_col == text and self.sort_asc else (" ↓" if self.current_sort_col == text else "")
+                btn = ctk.CTkButton(
+                    header_content,
+                    text=text + arrow,
+                    font=FONT_MONO_BOLD,
+                    text_color=TEXT_MUTED,
+                    fg_color="transparent",
+                    hover_color=BG_HOVER,
+                    border_width=0,
+                    height=24,
+                    anchor="w",
+                    command=lambda t=text: self.sort_grid(t)
+                )
+                btn.pack(side="left")
+
+                self.label_loaded_count = ctk.CTkLabel(
+                    header_content,
+                    text="",
+                    font=FONT_MONO_BOLD_SMALL,
+                    text_color=TEXT_MUTED,
+                    anchor="e",
+                    justify="right"
+                )
+                self.label_loaded_count.pack(side="right", padx=(8, 0))
+                self._update_loaded_count_display()
+            elif text and text != "ACCIONES":
                 arrow = " ↑" if self.current_sort_col == text and self.sort_asc else (" ↓" if self.current_sort_col == text else "")
                 btn = ctk.CTkButton(hf, text=text + arrow, font=FONT_MONO_BOLD, text_color=TEXT_MUTED, fg_color="transparent", hover_color=BG_HOVER, border_width=0, height=24, anchor="center" if text == "ST" else "w", command=lambda t=text: self.sort_grid(t))
                 btn.place(relx=0.5 if text == "ST" else 0.0, rely=0.5, anchor="center" if text == "ST" else "w")
@@ -1369,8 +1795,10 @@ class YezkaApp(ctk.CTk):
                 else: w['btn_wav'].configure(state="normal", text_color=ACCENT)
                 
                 if self.is_playing and self.current_playing_path == path:
-                    spin_char = self.spinner_frames[getattr(self, 'row_spinner_idx', 0)]
-                    w['btn_play'].configure(image=None, text=spin_char, font=("Menlo", 14, "bold"), text_color=ACCENT)
+                    if self.is_paused:
+                        w['btn_play'].configure(image=self.ic_play, text="", text_color=ACCENT, fg_color="transparent")
+                    else:
+                        w['btn_play'].configure(image=self.ic_pause, text="", text_color=ACCENT, fg_color="transparent")
                 else:
                     w['btn_play'].configure(image=self.ic_play, text="", text_color=TEXT_NORMAL, fg_color="transparent")
                     w['btn_play'].update_idletasks()
@@ -1611,6 +2039,29 @@ class YezkaApp(ctk.CTk):
         if any_active: self.btn_run.configure(fg_color=BG_MAIN, text_color=ACCENT, state="normal", hover_color="#1E1E1E", border_color=ACCENT)
         else: self.btn_run.configure(fg_color=BG_MAIN, text_color=TEXT_MUTED, state="disabled", border_color="#222")
 
+    def _sync_visible_rows_to_data(self):
+        """Conserva cambios escritos en filas visibles antes de recalcular el formato global."""
+        for row_idx in range(self.NUM_VISIBLE_ROWS):
+            if row_idx >= len(self.visible_paths):
+                break
+
+            path = self.visible_paths[row_idx]
+            if not path or path not in self.file_data:
+                continue
+
+            w = self.row_widgets[row_idx]
+            raw_name = w['name'].get().strip()
+            bpm = w['bpm'].get().strip()
+            key = w['key'].get().strip()
+            data = self.file_data[path]
+
+            if raw_name != data['name']:
+                data['orig_name'] = raw_name
+                data['pure_name'] = self._extract_pure_name(raw_name, bpm, key)
+
+            data['bpm'] = bpm
+            data['key'] = key
+
     def log_message(self, message):
         self.textbox_log.configure(state="normal"); self.textbox_log.insert("end", message + "\n"); self.textbox_log.see("end"); self.textbox_log.configure(state="disabled")
 
@@ -1624,10 +2075,9 @@ class YezkaApp(ctk.CTk):
         self.current_sort_col = "NOMBRE DE ARCHIVOS"
         self.sort_asc = True; self.top_index = 0
         self.is_wav_all_applied = False
-        self.label_loaded.configure(text="NINGÚN ARCHIVO CARGADO", text_color=TEXT_MUTED)
         self.current_local_dir = ""
         self.lbl_local_path.configure(text="Ruta: Ninguna")
-        self.draw_headers(); self.refresh_virtual_grid() 
+        self.draw_headers(); self._update_loaded_count_display(); self.refresh_virtual_grid() 
         self.textbox_log.configure(state="normal"); self.textbox_log.delete("1.0", "end"); self.log_message("> Reset de sistema."); self.textbox_log.configure(state="disabled")
         self.update_apply_button_state(); self.update_wav_button_state()
         self.loading_base_msg = "¡MEMORIA\nLIMPIA!"
@@ -1669,6 +2119,7 @@ class YezkaApp(ctk.CTk):
             if p not in self.loaded_paths:
                 self.loaded_paths.append(p)
                 self.file_data[p] = new_data[p]
+        self._update_loaded_count_display()
 
     def select_folder(self):
         f = filedialog.askdirectory()
@@ -1687,9 +2138,8 @@ class YezkaApp(ctk.CTk):
 
     def _finish_select_folder(self, f, new_paths, new_data):
         self._sync_files_data(new_paths, new_data)
-        self.label_loaded.configure(text=f"ARCHIVOS CARGADOS: {len(self.loaded_paths)}", text_color=TEXT_NORMAL)
         self.log_message("-" * 30); self.log_message(f"Carpeta cargada: {f}")
-        self.top_index = 0; self.draw_headers(); self.refresh_virtual_grid()
+        self.top_index = 0; self.draw_headers(); self._update_loaded_count_display(); self.refresh_virtual_grid()
         self.loading_base_msg = "¡ARCHIVOS\nCARGADOS!"
         self.hide_loading()
 
@@ -1709,8 +2159,8 @@ class YezkaApp(ctk.CTk):
 
     def _finish_select_files(self, new_paths, new_data):
         self._sync_files_data(new_paths, new_data)
-        self.label_loaded.configure(text=f"ARCHIVOS CARGADOS: {len(self.loaded_paths)}", text_color=TEXT_NORMAL)
         self.log_message("-" * 30); self.log_message(f"Archivos añadidos: {len(new_paths)} elementos.")
+        self._update_loaded_count_display()
         self.top_index = 0; self.refresh_virtual_grid()
         self.loading_base_msg = "¡ARCHIVOS\nCARGADOS!"
         self.hide_loading()
@@ -1759,6 +2209,8 @@ class YezkaApp(ctk.CTk):
     def convert_all_to_wav(self):
         to_convert = [p for p in self.loaded_paths if not p.lower().endswith('.wav')]
         if not to_convert: return
+        
+        self.stop_smart_folder()
         self.show_loading(f"COLA WAV\n0/{len(to_convert)}")
         self.process_next_conversion(to_convert, 0)
 
@@ -1784,6 +2236,7 @@ class YezkaApp(ctk.CTk):
                 self.session_history.pop(p, None)
                 self.metadata_cache.pop(p, None)
         self.loaded_paths = existing_paths
+        self._update_loaded_count_display()
         
         self.update_wav_button_state()
         self.refresh_virtual_grid()
