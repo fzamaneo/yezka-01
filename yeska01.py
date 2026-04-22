@@ -54,11 +54,15 @@ BG_ELEMENT = "#141414"
 ACCENT = "#DCE038"       
 COLOR_MODIFIED = "#E93B35" 
 COLOR_SAVED = "#35E93B"    
+COLOR_HISTORY = "#3B8CE9"  
+COLOR_HIST_NAME = "#727272"  # gris sutil para nombres editados en sesiones anteriores
 TEXT_NORMAL = "#DFDFDF"  
 TEXT_PURE = "#FFFFFF"    
 TEXT_PALE = "#C0C0C0"    
 TEXT_MUTED = "#555555"   
 TEXT_DIM = "#5A5A5A"     
+SEL_BG   = "#1F2A3A"   # fondo azul de fila seleccionada
+SEL_HOVER = "#28374D"  # hover sobre fila seleccionada (ligeramente más claro)
 RADIUS = 4 
 
 REGEX_KEY_START = re.compile(r'^(\d{1,2}[A-Za-z]{1,3})\s*[-_ ]\s*(.*)')
@@ -160,8 +164,8 @@ class YezkaApp(ctk.CTk):
         super().__init__()
         self._init_done = False 
         
-        self.title("YEZKA-01 - v0.9.46 (Definitive Tab Engine & Smart Extractor)") 
-        self.geometry("1134x780") 
+        self.title("YEZKA-01 - v0.9.47 (Color Tags & Rubber Band Select)") 
+        self.geometry("1154x780") 
         self.resizable(True, True)
         self.configure(fg_color=BG_MAIN)
 
@@ -189,6 +193,18 @@ class YezkaApp(ctk.CTk):
 
         self.config_file = os.path.expanduser("~/.yezka_config.json")
         self.default_smart_folder = os.path.expanduser("~/Documents/_ARCHIVOS_YEZKA_")
+        self.edit_log_file = os.path.expanduser("~/.yezka_edit_log.json")
+        self.persistent_edit_log = {}
+        self.colors_file = os.path.expanduser("~/.yezka_colors.json")
+        self.path_colors = {}        # path -> hex color string
+        self.selected_paths = set()  # paths actualmente seleccionados
+        # Estado del rubber-band drag
+        self._drag_active = False
+        self._drag_has_origin = False  # True solo si hubo un _sel_press real
+        self._drag_origin_abs = (0, 0)
+        self._drag_origin_row = None  # None = empezó en área vacía
+        self._drag_from_entry = False  # True si el drag arrancó en un campo de texto
+        self._sel_after_id   = None   # id para throttle de motion
         
         self.format_options = [
             "Añadir solo metadatos", 
@@ -212,12 +228,14 @@ class YezkaApp(ctk.CTk):
         self.show_log_default = False 
         self.default_tab_pref = "CARPETA INTELIGENTE"
         self.default_format_pref = "►KEY ►BPM - TITULO"
-        self.meta_separator = "►"
+        self.meta_separator = "-"
         self.prompt_create_default_folder = True 
         self.first_run_completed = False 
         self.last_active_tab = "CARPETA INTELIGENTE"
         
         self.load_config()
+        self.load_edit_log()
+        self.load_colors()
         
         if not self.smart_folders:
             self.smart_folders.append(self.default_smart_folder)
@@ -232,7 +250,7 @@ class YezkaApp(ctk.CTk):
         self.row_widgets = [] 
         self.visible_paths = [] 
         
-        self.COL_WIDTHS = [28, 575, 75, 60, 60, 40, 155]
+        self.COL_WIDTHS = [28, 575, 75, 60, 60, 40, 192]
 
         self.ic_trash = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.TRASH, color=TEXT_NORMAL, size=24), size=(20, 20))
         self.ic_refresh = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.REFRESH, color=ACCENT, size=24), size=(20, 20))
@@ -255,7 +273,7 @@ class YezkaApp(ctk.CTk):
         self.frame_top = ctk.CTkFrame(self, fg_color=BG_MAIN, corner_radius=0)
         self.frame_top.pack(side="top", fill="x", padx=20, pady=(15, 5))
 
-        self.label_title = ctk.CTkLabel(self.frame_top, text="YEZKA-01  //  v0.9.46", font=FONT_TITLE, text_color=TEXT_NORMAL)
+        self.label_title = ctk.CTkLabel(self.frame_top, text="YEZKA-01  //  v0.9.47", font=FONT_TITLE, text_color=TEXT_NORMAL)
         self.label_title.pack(side="left")
 
         self.btn_settings = ctk.CTkButton(self.frame_top, text="", image=self.ic_settings, width=30, height=30, fg_color=BG_MAIN, hover_color=BG_HOVER, command=self.open_general_settings)
@@ -390,6 +408,27 @@ class YezkaApp(ctk.CTk):
 
         self.rows_frame = ctk.CTkFrame(self.scroll_container, fg_color="transparent")
         self.rows_frame.pack(side="left", fill="both", expand=True)
+
+        # Ventana Toplevel semi-transparente para el rubber-band de selección
+        # (Toplevel con -alpha es la única forma de tener transparencia real en macOS)
+        self._sel_win = tk.Toplevel(self)
+        self._sel_win.overrideredirect(True)
+        self._sel_win.attributes("-alpha", 0.25)
+        self._sel_win.attributes("-topmost", True)
+        self._sel_win.configure(bg=ACCENT)
+        self._sel_win.withdraw()   # oculto por defecto
+        # IMPORTANTE: _sel_win captura eventos de mouse cuando está visible.
+        # Estos bindings los redirigen a nuestros handlers.
+        self._sel_win.bind("<B1-Motion>", self._sel_motion)
+        self._sel_win.bind("<ButtonRelease-1>", self._sel_release)
+
+        # Click/drag en área vacía entre filas
+        self.rows_frame.bind("<ButtonPress-1>", lambda e: self._sel_bg_press(e))
+        self.rows_frame.bind("<B1-Motion>", lambda e: self._sel_motion(e))
+        self.rows_frame.bind("<ButtonRelease-1>", lambda e: self._sel_release(e))
+        # Tracking global de motion/release para cualquier otro widget
+        self.bind("<B1-Motion>", self._sel_motion)
+        self.bind("<ButtonRelease-1>", self._sel_release)
 
         self.rows_frame.bind("<MouseWheel>", self.on_mouse_wheel)
         self.bind("<MouseWheel>", self.on_mouse_wheel) 
@@ -1089,7 +1128,7 @@ class YezkaApp(ctk.CTk):
                     self.show_log_default = data.get("show_log_default", False)
                     self.default_tab_pref = data.get("default_tab_pref", "CARPETA INTELIGENTE")
                     self.default_format_pref = data.get("default_format_pref", "►KEY ►BPM - TITULO")
-                    self.meta_separator = data.get("meta_separator", "►")
+                    self.meta_separator = data.get("meta_separator", "-")
                     self.prompt_create_default_folder = data.get("prompt_create_default_folder", True)
                     self.first_run_completed = data.get("first_run_completed", False)
             except: pass
@@ -1110,6 +1149,173 @@ class YezkaApp(ctk.CTk):
                 }, f)
         except Exception as e:
             self.log_message(f"> Error guardando configuración: {e}")
+
+    def load_edit_log(self):
+        if os.path.exists(self.edit_log_file):
+            try:
+                with open(self.edit_log_file, 'r') as f:
+                    self.persistent_edit_log = json.load(f)
+            except:
+                self.persistent_edit_log = {}
+
+    def add_to_edit_log(self, paths):
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        for p in paths:
+            self.persistent_edit_log[p] = timestamp
+
+    def save_edit_log(self):
+        self.persistent_edit_log = {k: v for k, v in self.persistent_edit_log.items() if os.path.exists(k)}
+        try:
+            with open(self.edit_log_file, 'w') as f:
+                json.dump(self.persistent_edit_log, f, indent=2)
+        except Exception as e:
+            self.log_message(f"> Error guardando historial de ediciones: {e}")
+
+    def load_colors(self):
+        if os.path.exists(self.colors_file):
+            try:
+                with open(self.colors_file, 'r') as f:
+                    self.path_colors = json.load(f)
+            except:
+                self.path_colors = {}
+
+    def save_colors(self):
+        self.path_colors = {k: v for k, v in self.path_colors.items() if os.path.exists(k)}
+        try:
+            with open(self.colors_file, 'w') as f:
+                json.dump(self.path_colors, f, indent=2)
+        except Exception as e:
+            self.log_message(f"> Error guardando colores: {e}")
+
+    def apply_color_to_selected(self, color):
+        """Asigna o elimina color en los paths seleccionados y refresca."""
+        targets = list(self.selected_paths) if self.selected_paths else []
+        # Si nada seleccionado, no hacer nada
+        if not targets:
+            return
+        for p in targets:
+            if color is None:
+                self.path_colors.pop(p, None)
+            else:
+                self.path_colors[p] = color
+        self.save_colors()
+        self.refresh_virtual_grid()
+        action = "eliminado" if color is None else f"asignado {color}"
+        self.log_message(f"> Color {action} en {len(targets)} archivo(s).")
+
+    def _close_popup(self, popup):
+        """Destruye un popup y restaura el estado limpio en la ventana principal."""
+        try:
+            popup.destroy()
+        except Exception:
+            pass
+        # Resetear estado de drag por si quedó sucio
+        self._drag_active = False
+        self._drag_has_origin = False
+        self._drag_from_entry = False
+        if self._sel_after_id:
+            try:
+                self.after_cancel(self._sel_after_id)
+            except Exception:
+                pass
+            self._sel_after_id = None
+        try:
+            self._sel_win.withdraw()
+        except Exception:
+            pass
+        # Devolver foco a la ventana principal con pequeño delay
+        self.after(50, self.focus_force)
+
+    def show_color_picker(self):
+        """Popup con paleta de 20 colores para etiquetar archivos."""
+        popup = tk.Toplevel(self)
+        popup.title("")
+        popup.resizable(False, False)
+        popup.configure(bg="#1A1A1A")
+        popup.attributes("-topmost", True)
+        popup.overrideredirect(True)
+
+        px = self.winfo_pointerx()
+        py = self.winfo_pointery()
+        popup.geometry(f"+{px+12}+{py+12}")
+
+        # 20 colores en 4 filas × 5 columnas
+        palette = [
+            "#E93B35", "#E96535", "#E9923B", "#E9BD3B", "#DCE038",
+            "#8CE038", "#35E93B", "#35E97A", "#35E9C0", "#35D4E9",
+            "#3B8CE9", "#3B5CE9", "#6B3BE9", "#9B3BE9", "#C93BE9",
+            "#E93BA8", "#E93B6A", "#E9E9E9", "#9A9A9A", "#5A5A5A",
+        ]
+
+        tk.Label(popup, text="COLOR", bg="#1A1A1A", fg="#666666",
+                 font=("Menlo", 8, "bold"), padx=10, pady=5).pack(fill="x")
+
+        frame_grid = tk.Frame(popup, bg="#1A1A1A", padx=8, pady=6)
+        frame_grid.pack()
+
+        SWATCH_W, SWATCH_H, COLS = 32, 22, 5
+        for idx, hex_c in enumerate(palette):
+            r, c = divmod(idx, COLS)
+            # tk.Canvas renderiza el color de fondo en macOS (tk.Button no lo hace)
+            swatch = tk.Canvas(
+                frame_grid,
+                width=SWATCH_W, height=SWATCH_H,
+                bg=hex_c,
+                highlightthickness=1,
+                highlightbackground="#2A2A2A",
+                cursor="hand2"
+            )
+            swatch.grid(row=r, column=c, padx=3, pady=3)
+            swatch.bind("<Button-1>",
+                        lambda e, color=hex_c: (self.apply_color_to_selected(color), self._close_popup(popup)))
+            swatch.bind("<Enter>",
+                        lambda e, s=swatch: s.configure(highlightbackground="#FFFFFF", highlightthickness=2))
+            swatch.bind("<Leave>",
+                        lambda e, s=swatch: s.configure(highlightbackground="#2A2A2A", highlightthickness=1))
+
+        tk.Frame(popup, bg="#2A2A2A", height=1).pack(fill="x", padx=8, pady=(4, 0))
+        quit_btn = tk.Canvas(popup, height=28, bg="#1A1A1A", highlightthickness=0, cursor="hand2")
+        quit_btn.pack(fill="x", padx=8, pady=4)
+        # Texto centrado (ancla center para no depender del ancho real del canvas)
+        quit_btn.create_text(90, 14,
+                             text="✕  Quitar color", fill="#888888", font=("Menlo", 9),
+                             anchor="center", tags="txt")
+        quit_btn.bind("<Button-1>", lambda e: (self.apply_color_to_selected(None), self._close_popup(popup)))
+        quit_btn.bind("<Enter>", lambda e: quit_btn.itemconfig("txt", fill=TEXT_PURE))
+        quit_btn.bind("<Leave>", lambda e: quit_btn.itemconfig("txt", fill="#888888"))
+
+        popup.bind("<FocusOut>", lambda e: self._close_popup(popup))
+        popup.bind("<Escape>", lambda e: self._close_popup(popup))
+        popup.focus_force()
+
+    def show_context_menu(self, row_idx, event):
+        """Menú contextual con click derecho sobre una fila."""
+        path = self.visible_paths[row_idx] if row_idx < len(self.visible_paths) else None
+        if not path:
+            return
+
+        # Si el archivo clicado no está en la selección, reemplazar selección
+        if path not in self.selected_paths:
+            self.selected_paths = {path}
+            self.refresh_virtual_grid()
+
+        menu = tk.Menu(self, tearoff=0, bg=BG_ELEMENT, fg=TEXT_NORMAL,
+                       activebackground="#2A2A2A", activeforeground=TEXT_PURE,
+                       font=("Menlo", 11), bd=0, relief="flat")
+
+        sel_count = len(self.selected_paths)
+        label_color = f"Asignar color ({sel_count} archivo{'s' if sel_count > 1 else ''})"
+        menu.add_command(label=label_color, command=self.show_color_picker)
+        menu.add_separator()
+        menu.add_command(label="Buscar en navegador", command=lambda: self.handle_web(row_idx))
+        menu.add_command(label="Analizar audio", command=lambda: self.handle_analyze(row_idx))
+        menu.add_separator()
+        menu.add_command(label="Abrir en Finder", command=lambda: self.open_finder(os.path.dirname(path)))
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def open_general_settings(self):
         dialog = ctk.CTkToplevel(self)
@@ -1313,10 +1519,20 @@ class YezkaApp(ctk.CTk):
 
     def _finish_start_smart(self, new_paths, new_data):
         self._sync_files_data(new_paths, new_data)
+        # Auto-ordenar: editados recientemente arriba, nuevos al fondo
+        self.current_sort_col = "ST"
+        self.sort_asc = False
+        self.loaded_paths.sort(
+            key=lambda p: self.persistent_edit_log.get(p, ""),
+            reverse=True
+        )
+        self.top_index = 0
+        self.draw_headers()
         self.refresh_virtual_grid()
         self.loading_base_msg = "¡CARPETA\nSINCRONIZADA!"
         self.hide_loading()
-        self.log_message(f"> {len(new_paths)} archivos encontrados en {os.path.basename(self.active_smart_path)}.")
+        edited_count = sum(1 for p in self.loaded_paths if p in self.persistent_edit_log)
+        self.log_message(f"> {len(new_paths)} archivos encontrados en {os.path.basename(self.active_smart_path)} — {edited_count} con historial de edición.")
         self._start_smart_observer()
 
     def _start_smart_observer(self):
@@ -1452,7 +1668,7 @@ class YezkaApp(ctk.CTk):
         if fmt == "Añadir solo metadatos":
             return pure_name
             
-        sep = getattr(self, 'meta_separator', '►')
+        sep = getattr(self, 'meta_separator', '-')
         if sep == "Espacio en blanco":
             sep = " "
             
@@ -1558,8 +1774,12 @@ class YezkaApp(ctk.CTk):
                 self._update_loaded_count_display()
             elif text and text != "ACCIONES":
                 arrow = " ↑" if self.current_sort_col == text and self.sort_asc else (" ↓" if self.current_sort_col == text else "")
-                btn = ctk.CTkButton(hf, text=text + arrow, font=FONT_MONO_BOLD, text_color=TEXT_MUTED, fg_color="transparent", hover_color=BG_HOVER, border_width=0, height=24, anchor="center" if text == "ST" else "w", command=lambda t=text: self.sort_grid(t))
+                st_active = (text == "ST" and self.current_sort_col == "ST")
+                hdr_color = COLOR_HISTORY if st_active else TEXT_MUTED
+                btn = ctk.CTkButton(hf, text=text + arrow, font=FONT_MONO_BOLD, text_color=hdr_color, fg_color="transparent", hover_color=BG_HOVER, border_width=0, height=24, anchor="center" if text == "ST" else "w", command=lambda t=text: self.sort_grid(t))
                 btn.place(relx=0.5 if text == "ST" else 0.0, rely=0.5, anchor="center" if text == "ST" else "w")
+                if text == "ST":
+                    ToolTip(btn, "Estado del archivo (click para ordenar por historial):\n● Rojo: cambios pendientes\n● Verde: guardado en sesión actual\n● Azul: editado en sesión anterior\n● Gris: sin cambios")
             elif text:
                 lbl = ctk.CTkLabel(hf, text=text, font=FONT_MONO_BOLD, text_color=TEXT_MUTED)
                 lbl.place(relx=0.5 if text == "ST" else 0.0, rely=0.5, anchor="center" if text == "ST" else "w")
@@ -1593,7 +1813,7 @@ class YezkaApp(ctk.CTk):
             bt_u = ctk.CTkButton(af, text="", image=self.ic_undo_muted, width=32, height=28, fg_color=BG_ELEMENT, border_width=0, hover_color="#1E1E1E", corner_radius=RADIUS)
             bt_u.pack(side="left", padx=(0, 4))
             ToolTip(bt_u, "Reiniciar o abortar cambios")
-            
+
             bt_web = ctk.CTkButton(af, text="", image=self.ic_web, width=32, height=28, fg_color=BG_ELEMENT, border_width=0, hover_color="#1E1E1E", corner_radius=RADIUS)
             bt_web.pack(side="left", padx=(0, 4))
             ToolTip(bt_web, "Buscar BPM/Key en navegador")
@@ -1603,8 +1823,14 @@ class YezkaApp(ctk.CTk):
             ToolTip(bt_analyze, "Analizar Audio Localmente")
             
             bt_w = ctk.CTkButton(af, text="WAV", width=40, height=28, fg_color=BG_ELEMENT, border_width=0, hover_color="#1E1E1E", corner_radius=RADIUS, font=FONT_MONO)
-            bt_w.pack(side="left")
+            bt_w.pack(side="left", padx=(0, 4))
             ToolTip(bt_w, "Convertir a WAV")
+
+            chk_wrap = ctk.CTkFrame(af, width=32, height=28, fg_color=BG_ELEMENT, corner_radius=RADIUS)
+            chk_wrap.pack(side="left")
+            chk_wrap.pack_propagate(False)
+            chk = tk.Canvas(chk_wrap, width=16, height=16, bg=BG_ELEMENT, highlightthickness=0, bd=0, cursor="hand2")
+            chk.place(relx=0.5, rely=0.5, anchor="center")
 
             e_name.bind("<KeyRelease>", lambda e, idx=i: self.visual_row_state(idx, True))
             e_bpm.bind("<KeyRelease>", lambda e, idx=i: self.visual_row_state(idx, False))
@@ -1622,19 +1848,202 @@ class YezkaApp(ctk.CTk):
             bt_web.configure(command=lambda idx=i: self.handle_web(idx))
             bt_analyze.configure(command=lambda idx=i: self.handle_analyze(idx))
             bt_w.configure(command=lambda idx=i: self.handle_wav(idx))
+            for widget in (chk_wrap, chk):
+                widget.bind("<Button-1>", lambda e, idx=i: self._toggle_row_selection(idx))
+                widget.bind("<Enter>", lambda e, idx=i: self._hover_in_checkbox(idx))
+                widget.bind("<Leave>", lambda e, idx=i: self._hover_out_checkbox(idx))
+                widget.bind("<Button-2>", lambda e, idx=i: self.show_context_menu(idx, e))
+                widget.bind("<Button-3>", lambda e, idx=i: self.show_context_menu(idx, e))
             
-            for widget in [btn_play, e_name, tag_lbl, e_bpm, e_key, l_st]:
+            # Widgets no-editables: hover + selección completa
+            non_entry_widgets = [btn_play, tag_lbl, l_st, af, bt_u, bt_web, bt_analyze, bt_w]
+            for widget in non_entry_widgets:
                 widget.bind("<Enter>", lambda e, idx=i: self.hover_in_row(idx))
                 widget.bind("<Leave>", lambda e, idx=i: self.hover_out_row(idx))
+                widget.bind("<ButtonPress-1>", lambda e, idx=i: self._sel_press(idx, e, from_entry=False))
+                widget.bind("<B1-Motion>", lambda e: self._sel_motion(e))
+                widget.bind("<ButtonRelease-1>", lambda e: self._sel_release(e))
+                widget.bind("<Button-2>", lambda e, idx=i: self.show_context_menu(idx, e))
+                widget.bind("<Button-3>", lambda e, idx=i: self.show_context_menu(idx, e))
 
-            row_widgets = {'btn_play': btn_play, 'name': e_name, 'tag_lbl': tag_lbl, 'bpm': e_bpm, 'key': e_key, 'estado': l_st, 'btn_undo': bt_u, 'btn_web': bt_web, 'btn_analyze': bt_analyze, 'btn_wav': bt_w, 'frame': af}
+            # Campos de texto: hover + click-para-seleccionar, pero drag libre (selección de texto)
+            entry_widgets = [e_name, e_bpm, e_key]
+            for widget in entry_widgets:
+                widget.bind("<Enter>", lambda e, idx=i: self.hover_in_row(idx))
+                widget.bind("<Leave>", lambda e, idx=i: self.hover_out_row(idx))
+                widget.bind("<ButtonPress-1>", lambda e, idx=i: self._sel_press(idx, e, from_entry=True))
+                # NO vinculamos B1-Motion ni ButtonRelease-1 aquí:
+                # el drag dentro del Entry lo maneja Tk para seleccionar texto
+                widget.bind("<Button-2>", lambda e, idx=i: self.show_context_menu(idx, e))
+                widget.bind("<Button-3>", lambda e, idx=i: self.show_context_menu(idx, e))
+
+            row_widgets = {'btn_play': btn_play, 'name': e_name, 'tag_lbl': tag_lbl, 'bpm': e_bpm, 'key': e_key, 'estado': l_st, 'btn_undo': bt_u, 'btn_web': bt_web, 'btn_analyze': bt_analyze, 'btn_wav': bt_w, 'frame': af, 'chk_wrap': chk_wrap, 'chk': chk}
             self.row_widgets.append(row_widgets)
             self.hide_row(i)
 
-    def hover_in_row(self, row_idx, event=None):
-        if row_idx >= len(self.visible_paths) or not self.visible_paths[row_idx]: return
+    def _draw_chk(self, canvas, selected, bg_color=BG_ELEMENT):
+        """Dibuja el cuadrado de selección de una fila."""
+        canvas.delete("all")
+        canvas.configure(bg=bg_color)
+        if selected:
+            canvas.create_rectangle(2, 2, 14, 14, fill=ACCENT, outline=ACCENT, width=1)
+            # Check mark
+            canvas.create_line(3, 8, 6, 12, 13, 4, fill=BG_MAIN, width=2, capstyle="round", joinstyle="round")
+        else:
+            canvas.create_rectangle(2, 2, 14, 14, fill="", outline="#484848", width=1)
+
+    def _set_checkbox_button_state(self, row_idx, hovered=False):
+        if row_idx >= len(self.row_widgets):
+            return
         w = self.row_widgets[row_idx]
-        color = BG_HOVER
+        bg_color = "#1E1E1E" if hovered else BG_ELEMENT
+        w['chk_wrap'].configure(fg_color=bg_color)
+        path = self.visible_paths[row_idx] if row_idx < len(self.visible_paths) else None
+        self._draw_chk(w['chk'], bool(path and path in self.selected_paths), bg_color=bg_color)
+
+    def _toggle_row_selection(self, row_idx):
+        """Toggle de selección individual al hacer click en el checkbox."""
+        path = self.visible_paths[row_idx] if row_idx < len(self.visible_paths) else None
+        if not path:
+            return
+        if path in self.selected_paths:
+            self.selected_paths.discard(path)
+        else:
+            self.selected_paths.add(path)
+        self.refresh_virtual_grid()
+
+    def _hover_in_checkbox(self, row_idx):
+        self.hover_in_row(row_idx)
+        if row_idx >= len(self.visible_paths) or not self.visible_paths[row_idx]:
+            return
+        self._set_checkbox_button_state(row_idx, hovered=True)
+
+    def _hover_out_checkbox(self, row_idx):
+        self.hover_out_row(row_idx)
+        if row_idx >= len(self.visible_paths) or not self.visible_paths[row_idx]:
+            return
+        self._set_checkbox_button_state(row_idx, hovered=False)
+
+    def _update_selection_display(self):
+        """Actualiza solo los fondos de selección de las filas visibles.
+        Más rápido que refresh_virtual_grid durante el drag."""
+        self._sel_after_id = None
+        for i in range(min(self.NUM_VISIBLE_ROWS, len(self.visible_paths))):
+            path = self.visible_paths[i]
+            if not path:
+                continue
+            w = self.row_widgets[i]
+            bg = SEL_BG if path in self.selected_paths else BG_ELEMENT
+            w['name'].configure(fg_color=bg)
+            w['tag_lbl'].configure(fg_color=bg)
+            w['bpm'].configure(fg_color=bg)
+            w['key'].configure(fg_color=bg)
+            self._set_checkbox_button_state(i, hovered=False)
+
+    # ── Rubber-band selection ──────────────────────────────────────────────
+
+    def _sel_bg_press(self, event):
+        """Press en área vacía entre filas: limpiar selección e iniciar posible drag."""
+        self._drag_origin_abs = (event.x_root, event.y_root)
+        self._drag_active = False
+        self._drag_has_origin = True
+        self._drag_from_entry = False
+        self._drag_origin_row = None
+        self.selected_paths.clear()
+        self.refresh_virtual_grid()
+
+    def _sel_press(self, row_idx, event, from_entry=False):
+        """Inicio de click/drag en un widget de fila."""
+        self._drag_origin_abs = (event.x_root, event.y_root)
+        self._drag_active = False
+        self._drag_has_origin = True
+        self._drag_from_entry = from_entry
+        self._drag_origin_row = row_idx
+
+        path = self.visible_paths[row_idx] if row_idx is not None and row_idx < len(self.visible_paths) else None
+        if path:
+            if event.state & 0x0001:  # Shift → agregar
+                self.selected_paths.add(path)
+                self.refresh_virtual_grid()
+            else:
+                # Siempre reemplazar la selección en un click sin Shift
+                self.selected_paths = {path}
+                self.refresh_virtual_grid()
+
+    def _sel_motion(self, event):
+        """Mouse en movimiento con botón 1 presionado: rubber-band."""
+        # Ignorar si no hubo un press real en la zona de archivos
+        if not self._drag_has_origin:
+            return
+        # Ignorar si el drag arrancó desde un campo de texto
+        if self._drag_from_entry:
+            return
+
+        ox, oy = self._drag_origin_abs
+        dx = abs(event.x_root - ox)
+        dy = abs(event.y_root - oy)
+
+        if dx < 6 and dy < 6:
+            return
+
+        if not self._drag_active:
+            self._drag_active = True
+            if self._drag_origin_row is None:
+                self.selected_paths.clear()
+
+        # Posicionar el Toplevel semi-transparente (barato, sin redibujo)
+        x1r = min(ox, event.x_root)
+        y1r = min(oy, event.y_root)
+        bw  = max(2, abs(event.x_root - ox))
+        bh  = max(2, abs(event.y_root - oy))
+        self._sel_win.geometry(f"{bw}x{bh}+{x1r}+{y1r}")
+        self._sel_win.deiconify()
+        self._sel_win.lift()
+
+        # Calcular filas tocadas por el rectángulo (coords absolutas)
+        r_top = min(oy, event.y_root)
+        r_bot = max(oy, event.y_root)
+        for i in range(self.NUM_VISIBLE_ROWS):
+            if i >= len(self.visible_paths) or not self.visible_paths[i]:
+                continue
+            row_w = self.row_widgets[i]['name']
+            ry = row_w.winfo_rooty()
+            rh = row_w.winfo_height()
+            if r_bot >= ry and r_top <= ry + rh:
+                self.selected_paths.add(self.visible_paths[i])
+            else:
+                if self._drag_origin_row is None:
+                    self.selected_paths.discard(self.visible_paths[i])
+
+        # Throttle: un solo redibujo cada ~16 ms (≤60 fps)
+        if not self._sel_after_id:
+            self._sel_after_id = self.after(16, self._update_selection_display)
+
+    def _sel_release(self, event):
+        """Fin del drag: ocultar ventana rubber-band y redibujo final."""
+        self._drag_has_origin = False
+        if not self._drag_active:
+            return
+        self._sel_win.withdraw()
+        self._drag_active = False
+        # Cancelar update pendiente y hacer refresh completo final
+        if self._sel_after_id:
+            try:
+                self.after_cancel(self._sel_after_id)
+            except Exception:
+                pass
+            self._sel_after_id = None
+        self.refresh_virtual_grid()
+
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def hover_in_row(self, row_idx, event=None):
+        if self._drag_active: return  # no interferir durante rubber-band
+        if row_idx >= len(self.visible_paths) or not self.visible_paths[row_idx]: return
+        path = self.visible_paths[row_idx]
+        w = self.row_widgets[row_idx]
+        is_selected = path in self.selected_paths
+        color = SEL_HOVER if is_selected else BG_HOVER
         w['btn_play'].configure(fg_color=color)
         w['name'].configure(fg_color=color)
         w['tag_lbl'].configure(fg_color=color)
@@ -1642,9 +2051,12 @@ class YezkaApp(ctk.CTk):
         w['key'].configure(fg_color=color)
 
     def hover_out_row(self, row_idx, event=None):
+        if self._drag_active: return  # no interferir durante rubber-band
         if row_idx >= len(self.visible_paths) or not self.visible_paths[row_idx]: return
+        path = self.visible_paths[row_idx]
         w = self.row_widgets[row_idx]
-        color = BG_ELEMENT
+        is_selected = path in self.selected_paths
+        color = SEL_BG if is_selected else BG_ELEMENT
         w['btn_play'].configure(fg_color="transparent")
         w['name'].configure(fg_color=color)
         w['tag_lbl'].configure(fg_color=color)
@@ -1718,12 +2130,12 @@ class YezkaApp(ctk.CTk):
         self.update_apply_button_state(); self.refresh_virtual_grid()
 
     def hide_row(self, index):
-        for key, widget in self.row_widgets[index].items():
-            if hasattr(widget, 'grid_remove') and key not in ['btn_undo', 'btn_web', 'btn_analyze', 'btn_wav']: widget.grid_remove()
+        for key in ['btn_play', 'name', 'tag_lbl', 'bpm', 'key', 'estado', 'frame']:
+            self.row_widgets[index][key].grid_remove()
 
     def show_row(self, index):
-        for key, widget in self.row_widgets[index].items():
-            if hasattr(widget, 'grid') and key not in ['btn_undo', 'btn_web', 'btn_analyze', 'btn_wav']: widget.grid()
+        for key in ['btn_play', 'name', 'tag_lbl', 'bpm', 'key', 'estado', 'frame']:
+            self.row_widgets[index][key].grid()
 
     def on_scrollbar(self, *args):
         total = len(self.loaded_paths)
@@ -1743,6 +2155,7 @@ class YezkaApp(ctk.CTk):
 
     def refresh_virtual_grid(self):
         total = len(self.loaded_paths)
+        self.selected_paths.intersection_update(self.loaded_paths)
         self.visible_paths = [] 
         if total == 0:
             for i in range(self.NUM_VISIBLE_ROWS): self.hide_row(i)
@@ -1767,22 +2180,50 @@ class YezkaApp(ctk.CTk):
                 w['name'].delete(0, 'end'); w['name'].insert(0, data['name']); w['name'].set_initial_state() 
                 
                 is_staged = data['estado'] == COLOR_MODIFIED
-                highlight = data['is_custom'] or data['is_formatted'] or is_staged
-                
-                w['name'].configure(text_color=TEXT_PURE if highlight else TEXT_PALE)
+                is_current_session = data.get('is_custom', False)  # guardado esta sesión
+                previously_edited = data.get('is_previously_edited', False)
+                is_formatted = data.get('is_formatted', False)
+                user_color = self.path_colors.get(path)  # color asignado por usuario
+                is_selected = path in self.selected_paths
+
+                if is_staged or is_current_session:
+                    name_color = user_color if user_color else TEXT_PURE
+                elif user_color:
+                    name_color = user_color
+                elif previously_edited:
+                    name_color = COLOR_HIST_NAME
+                else:
+                    name_color = TEXT_PALE
+
+                highlight = is_staged or is_current_session  # solo para BPM/KEY
+
+                w['name'].configure(text_color=name_color)
+                # Fondo de selección
+                sel_bg = SEL_BG if is_selected else BG_ELEMENT
+                w['name'].configure(fg_color=sel_bg)
+                w['tag_lbl'].configure(fg_color=sel_bg)
+                w['bpm'].configure(fg_color=sel_bg)
+                w['key'].configure(fg_color=sel_bg)
+                self._set_checkbox_button_state(i, hovered=False)
                 w['tag_lbl'].configure(text=data['ext'], text_color=TEXT_MUTED if data['ext'] == 'WAV' else ACCENT)
                 
                 w['bpm'].delete(0, 'end')
                 if data['bpm']: w['bpm'].insert(0, data['bpm'])
                 w['bpm'].set_initial_state()
-                w['bpm'].configure(text_color=TEXT_PURE if highlight else TEXT_PALE)
+                bpm_key_color = user_color if user_color else (TEXT_PURE if highlight else (COLOR_HIST_NAME if previously_edited else TEXT_PALE))
+                w['bpm'].configure(text_color=bpm_key_color)
                 
                 w['key'].delete(0, 'end')
                 if data['key']: w['key'].insert(0, data['key'])
                 w['key'].set_initial_state()
-                w['key'].configure(text_color=TEXT_PURE if highlight else TEXT_PALE)
+                w['key'].configure(text_color=bpm_key_color)
                 
-                w['estado'].configure(text_color=data['estado'])
+                display_estado = data['estado']
+                if user_color and display_estado != COLOR_MODIFIED:
+                    display_estado = user_color
+                elif data.get('is_previously_edited', False) and not data.get('is_custom', False) and display_estado != COLOR_MODIFIED:
+                    display_estado = COLOR_HISTORY
+                w['estado'].configure(text_color=display_estado)
                 
                 can_undo = data['is_custom'] or data.get('is_staged', False)
                 if can_undo: 
@@ -1915,15 +2356,20 @@ class YezkaApp(ctk.CTk):
         self.hide_loading()
 
     def sort_grid(self, col):
-        self.show_loading(f"ORDENANDO\n{col}")
+        if col == "NOMBRE DE ARCHIVOS":
+            next_asc = (not self.sort_asc) if self.current_sort_col == col else False
+            msg = "ORDENANDO\nMÁS ANTIGUOS\nPRIMERO" if next_asc else "ORDENANDO\nMÁS RECIENTES\nPRIMERO"
+        else:
+            msg = f"ORDENANDO\n{col}"
+        self.show_loading(msg)
         self.after(400, lambda: self._do_sort_grid(col))
 
     def _do_sort_grid(self, col):
         if self.current_sort_col == col: self.sort_asc = not self.sort_asc
-        else: self.current_sort_col = col; self.sort_asc = False if col in ["TEMPO/BPM", "ST"] else True
+        else: self.current_sort_col = col; self.sort_asc = False if col in ["NOMBRE DE ARCHIVOS", "TEMPO/BPM", "ST"] else True
         def get_sort_key(p):
             data = self.file_data[p]
-            if col == "NOMBRE DE ARCHIVOS": return data['name'].lower()
+            if col == "NOMBRE DE ARCHIVOS": return os.path.getmtime(p) if os.path.exists(p) else 0.0
             elif col == "FORMATO": return data['ext'].lower()
             elif col == "TEMPO/BPM":
                 try: return float(data['bpm'])
@@ -1932,7 +2378,7 @@ class YezkaApp(ctk.CTk):
                 match = REGEX_KEY_STRICT.match(data['key'].strip())
                 if match: return (int(match.group(1)), match.group(2).upper())
                 return (99, data['key'].upper())
-            elif col == "ST": return data['is_custom']
+            elif col == "ST": return self.persistent_edit_log.get(p, "")
             return ""
         self.loaded_paths.sort(key=get_sort_key, reverse=not self.sort_asc)
         self.top_index = 0
@@ -2110,7 +2556,8 @@ class YezkaApp(ctk.CTk):
                     'is_custom': cu, 
                     'is_formatted': is_formatted,
                     'is_staged': False,
-                    'converted_to_wav': False
+                    'converted_to_wav': False,
+                    'is_previously_edited': p in self.persistent_edit_log
                 }
         return new_paths, new_data
 
@@ -2191,6 +2638,7 @@ class YezkaApp(ctk.CTk):
             subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@44100", current_path, n], check=True)
             bk = os.path.join(b, fn); shutil.move(current_path, bk)
             self.session_history[n] = bk
+            self.add_to_edit_log([n])
             self.loaded_paths[self.loaded_paths.index(current_path)] = n
             if current_path in self.metadata_cache: self.metadata_cache[n] = self.metadata_cache.pop(current_path)
             if current_path in self.file_data:
@@ -2203,6 +2651,7 @@ class YezkaApp(ctk.CTk):
         self.after(3000, lambda cp=current_path, np=n: self._clear_shield(cp, np))
         
         if auto_update:
+            self.save_edit_log()
             self.loading_base_msg = "¡CONVERSIÓN\nCOMPLETA!"
             self.hide_loading()
 
@@ -2244,7 +2693,8 @@ class YezkaApp(ctk.CTk):
         
         if self.tabs.get().startswith("CARPETA INTELIGENTE"):
             self._start_smart_observer()
-            
+
+        self.save_edit_log()
         self.hide_loading()
 
     def restore_all_formats(self):
@@ -2405,6 +2855,8 @@ class YezkaApp(ctk.CTk):
                 
             self.after(3000, lambda op=old_p, np=new_p: self._clear_shield(op, np))
             
+        edited_paths = [new_p for (_, new_p, _) in success_updates]
+        self.add_to_edit_log(edited_paths)
         self.show_loading("ACTUALIZANDO\nCARPETA...")
         self.after(1500, self._finalize_mass_conversion)
 
