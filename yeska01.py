@@ -309,7 +309,7 @@ class YezkaApp(ctk.CTk):
         self.visible_paths = [] 
         
         # Columnas: PLAY | BPM | KEY | FORMATO | NOMBRE | ST | ACCIONES
-        self.COL_WIDTHS = [28, 62, 62, 470, 68, 40, 192]
+        self.COL_WIDTHS = [28, 52, 52, 490, 68, 40, 192]
 
         self.ic_trash = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.TRASH, color=TEXT_NORMAL, size=24), size=(20, 20))
         self.ic_refresh = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.REFRESH, color=ACCENT, size=24), size=(20, 20))
@@ -317,6 +317,7 @@ class YezkaApp(ctk.CTk):
         self.ic_web_accent = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.WORLD_SEARCH, color=ACCENT, size=24), size=(18, 18))
         self.ic_web_muted = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.WORLD_SEARCH, color=TEXT_MUTED, size=24), size=(18, 18))
         self.ic_analyze = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.WAND, color=ACCENT, size=24), size=(18, 18))
+        self.ic_analyze_normal = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.WAND, color=TEXT_NORMAL, size=24), size=(18, 18))
         self.ic_analyze_muted = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.WAND, color=TEXT_MUTED, size=24), size=(18, 18))
         self.ic_undo_muted = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.ARROW_BACK_UP, color=TEXT_MUTED, size=24), size=(18, 18))
         self.ic_undo_accent = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.ARROW_BACK_UP, color=ACCENT, size=24), size=(18, 18))
@@ -568,7 +569,16 @@ class YezkaApp(ctk.CTk):
         self.loading_spinner_label = ctk.CTkLabel(self.loading_frame, text="", font=("Menlo", 40, "bold"), text_color=ACCENT)
         self.loading_spinner_label.pack(pady=(15, 0))
         self.loading_text_label = ctk.CTkLabel(self.loading_frame, text="", font=FONT_MONO, text_color=ACCENT, justify="center")
-        self.loading_text_label.pack(pady=(10, 15), padx=20)
+        self.loading_text_label.pack(pady=(10, 4), padx=20)
+        self.loading_cancel_btn = ctk.CTkButton(
+            self.loading_frame, text="CANCELAR", font=FONT_MONO_BOLD,
+            fg_color="transparent", hover_color="#3a1010", text_color=COLOR_MODIFIED,
+            border_width=1, border_color=COLOR_MODIFIED, corner_radius=RADIUS,
+            width=100, height=24, command=self._cancel_wav_conversion
+        )
+        # El botón se muestra solo cuando hay un proceso cancelable activo
+        self.loading_cancel_btn.pack(pady=(0, 14))
+        self.loading_cancel_btn.pack_forget()  # oculto por defecto
 
         self.draw_headers()
         self.build_virtual_rows()
@@ -1247,6 +1257,7 @@ class YezkaApp(ctk.CTk):
             self.log_message("> [ERROR] Motor de audio no instalado. Ejecuta en terminal: pip install pygame")
             return
 
+        if row_idx >= len(self.visible_paths): return
         path = self.visible_paths[row_idx]
         if not path or not os.path.exists(path): return
 
@@ -1748,6 +1759,7 @@ class YezkaApp(ctk.CTk):
         self.current_sort_col = "ST"
         self.sort_asc = False
         def _st_priority(p):
+            if p not in self.file_data: return 0
             estado = self.file_data[p].get('estado', TEXT_MUTED)
             if estado == COLOR_MODIFIED: return 2
             if estado == COLOR_SAVED: return 1
@@ -1954,6 +1966,14 @@ class YezkaApp(ctk.CTk):
         _, color = self._camelot_entry_for_key(key)
         return color or fallback_color
 
+    @staticmethod
+    def _darken_color(hex_color, factor=0.45):
+        """Oscurece un color hex por un factor (0=negro, 1=original)."""
+        hex_color = hex_color.lstrip('#')
+        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+        r, g, b = int(r * factor), int(g * factor), int(b * factor)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
     def _build_formatted_name(self, pure_name, bp, ky, fmt):
         if fmt == "Añadir solo metadatos":
             return pure_name
@@ -2159,10 +2179,10 @@ class YezkaApp(ctk.CTk):
             btn_play = ctk.CTkButton(self.rows_frame, text="", image=self.ic_play, width=self.COL_WIDTHS[0], height=28, fg_color="transparent", hover_color=BG_HOVER, corner_radius=RADIUS)
             btn_play.grid(row=i, column=0, padx=5, pady=(2, 2), sticky="w")
 
-            e_bpm = YezkaEntry(self.rows_frame, width=self.COL_WIDTHS[1], height=28, fg_color=BG_ELEMENT, border_width=0, corner_radius=RADIUS, font=FONT_MONO)
+            e_bpm = YezkaEntry(self.rows_frame, width=self.COL_WIDTHS[1], height=28, fg_color=BG_ELEMENT, border_width=0, corner_radius=RADIUS, font=FONT_MONO_BOLD)
             e_bpm.grid(row=i, column=1, padx=5, pady=(2, 2), sticky="w")
 
-            e_key = YezkaEntry(self.rows_frame, width=self.COL_WIDTHS[2], height=28, fg_color=BG_ELEMENT, border_width=0, corner_radius=RADIUS, font=FONT_MONO)
+            e_key = YezkaEntry(self.rows_frame, width=self.COL_WIDTHS[2], height=28, fg_color=BG_ELEMENT, border_width=0, corner_radius=RADIUS, font=FONT_MONO_BOLD)
             e_key.grid(row=i, column=2, padx=5, pady=(2, 2), sticky="w")
 
             # Contenedor del campo nombre + botón ojo por fila
@@ -2196,7 +2216,7 @@ class YezkaApp(ctk.CTk):
             bt_web.pack(side="left", padx=(0, 4))
             ToolTip(bt_web, "Buscar BPM/Tono en navegador\n● Amarillo: faltan datos de BPM o Tono")
 
-            bt_analyze = ctk.CTkButton(af, text="", image=self.ic_analyze, width=32, height=28, fg_color=BG_ELEMENT, border_width=0, hover_color="#1E1E1E", corner_radius=RADIUS)
+            bt_analyze = ctk.CTkButton(af, text="", image=self.ic_analyze_normal, width=32, height=28, fg_color=BG_ELEMENT, border_width=0, hover_color="#1E1E1E", corner_radius=RADIUS)
             bt_analyze.pack(side="left", padx=(0, 4))
             ToolTip(bt_analyze, "Analizar BPM y Tono localmente (Essentia)\n● Amarillo: faltan datos de BPM o Tono")
 
@@ -2390,11 +2410,16 @@ class YezkaApp(ctk.CTk):
         """Borra el campo BPM de todos los archivos seleccionados."""
         if not self.selected_paths:
             return
+        fmt = self.format_var.get()
         for p in list(self.selected_paths):
             if p in self.file_data:
                 self.file_data[p]['bpm'] = ''
                 self.file_data[p]['estado'] = COLOR_MODIFIED
                 self.file_data[p]['is_staged'] = True
+                # Reconstruir nombre sin BPM
+                data = self.file_data[p]
+                pure_n = data.get('pure_name') or data['orig_name']
+                data['name'] = data['orig_name'] if fmt == "Añadir solo metadatos" else self._build_formatted_name(pure_n, '', data.get('key', ''), fmt)
         self.log_message(f"> [BPM] BPM borrado de {len(self.selected_paths)} archivo(s)")
         self.refresh_virtual_grid()
         self.update_apply_button_state()
@@ -2403,11 +2428,16 @@ class YezkaApp(ctk.CTk):
         """Borra el campo Tono (key) de todos los archivos seleccionados."""
         if not self.selected_paths:
             return
+        fmt = self.format_var.get()
         for p in list(self.selected_paths):
             if p in self.file_data:
                 self.file_data[p]['key'] = ''
                 self.file_data[p]['estado'] = COLOR_MODIFIED
                 self.file_data[p]['is_staged'] = True
+                # Reconstruir nombre sin Tono
+                data = self.file_data[p]
+                pure_n = data.get('pure_name') or data['orig_name']
+                data['name'] = data['orig_name'] if fmt == "Añadir solo metadatos" else self._build_formatted_name(pure_n, data.get('bpm', ''), '', fmt)
         self.log_message(f"> [TONO] Tono borrado de {len(self.selected_paths)} archivo(s)")
         self.refresh_virtual_grid()
         self.update_apply_button_state()
@@ -2594,7 +2624,14 @@ class YezkaApp(ctk.CTk):
         w['name_frame'].configure(fg_color=color)
         w['tag_lbl'].configure(fg_color=color)
         w['bpm'].configure(fg_color=color)
-        w['key'].configure(fg_color=color)
+        # Preservar fondo Camelot en key solo si la columna está activa
+        _, _key_on = self._fmt_active_fields()
+        if _key_on and path in self.file_data:
+            _, camelot_color = self._camelot_entry_for_key(self.file_data[path].get('key', ''))
+            if not camelot_color:
+                w['key'].configure(fg_color=color)
+        else:
+            w['key'].configure(fg_color=color)
 
     def hover_out_row(self, row_idx, event=None):
         if self._drag_active: return
@@ -2608,7 +2645,13 @@ class YezkaApp(ctk.CTk):
         w['name_frame'].configure(fg_color=color)
         w['tag_lbl'].configure(fg_color=color)
         w['bpm'].configure(fg_color=color)
-        w['key'].configure(fg_color=color)
+        # Restaurar fondo Camelot en key solo si la columna está activa
+        _, _key_on = self._fmt_active_fields()
+        if _key_on and path in self.file_data:
+            _, camelot_color = self._camelot_entry_for_key(self.file_data[path].get('key', ''))
+            w['key'].configure(fg_color=camelot_color if camelot_color else color)
+        else:
+            w['key'].configure(fg_color=color)
 
     def handle_wav(self, row_idx):
         path = self.visible_paths[row_idx]
@@ -2665,8 +2708,9 @@ class YezkaApp(ctk.CTk):
             self.stage_row_changes(row_idx)
 
     def stage_row_changes(self, row_idx):
+        if row_idx >= len(self.visible_paths): return
         path = self.visible_paths[row_idx]
-        if not path: return
+        if not path or path not in self.file_data: return
         w = self.row_widgets[row_idx]
         raw_name = w['name'].get().strip()
         bp = w['bpm'].get().strip()
@@ -2751,6 +2795,10 @@ class YezkaApp(ctk.CTk):
             data_index = self.top_index + i
             if data_index < total:
                 path = self.loaded_paths[data_index]
+                if path not in self.file_data:
+                    self.visible_paths.append(None)
+                    self.hide_row(i)
+                    continue
                 self.visible_paths.append(path)
                 data = self.file_data[path]
                 w = self.row_widgets[i]
@@ -2793,7 +2841,7 @@ class YezkaApp(ctk.CTk):
                 w['name_frame'].configure(fg_color=sel_bg)
                 w['tag_lbl'].configure(fg_color=sel_bg)
                 w['bpm'].configure(fg_color=sel_bg)
-                w['key'].configure(fg_color=sel_bg)
+                # El fondo de key se asigna más abajo según color Camelot
                 self._set_checkbox_button_state(i, hovered=False)
                 w['tag_lbl'].configure(text=data['ext'], text_color=TEXT_MUTED if data['ext'] == 'WAV' else ACCENT)
 
@@ -2816,8 +2864,13 @@ class YezkaApp(ctk.CTk):
                 if not _key_on:
                     w['key'].configure(fg_color=_dim_bg, text_color=_dim_text)
                 else:
-                    base_key_color = user_color if user_color else (TEXT_PURE if highlight else (COLOR_HIST_NAME if previously_edited else TEXT_PALE))
-                    w['key'].configure(text_color=self._key_display_color(data['key'], base_key_color))
+                    _, camelot_color = self._camelot_entry_for_key(data.get('key', ''))
+                    if camelot_color and data.get('key'):
+                        dark_text = self._darken_color(camelot_color, 0.38)
+                        w['key'].configure(fg_color=camelot_color, text_color=dark_text)
+                    else:
+                        base_key_color = user_color if user_color else (TEXT_PURE if highlight else (COLOR_HIST_NAME if previously_edited else TEXT_PALE))
+                        w['key'].configure(fg_color=BG_ELEMENT, text_color=self._key_display_color(data['key'], base_key_color))
                 
                 display_estado = data['estado']
                 if user_color and display_estado != COLOR_MODIFIED:
@@ -2836,16 +2889,16 @@ class YezkaApp(ctk.CTk):
                 else:
                     w['btn_undo'].configure(state="disabled", image=self.ic_undo_muted)
 
-                # 🌐 Buscar en web: amarillo cuando faltan BPM o Tono
+                # 🌐 Buscar en web: amarillo cuando faltan BPM o Tono, blanco si ya tiene
                 w['btn_web'].configure(
                     state="normal",
-                    image=self.ic_web_accent if missing_meta else self.ic_web_muted
+                    image=self.ic_web_accent if missing_meta else self.ic_web
                 )
 
-                # 🪄 Analizar: amarillo cuando faltan BPM o Tono; apagado cuando ya tiene ambos
+                # 🪄 Analizar: amarillo cuando faltan BPM o Tono; blanco cuando ya tiene ambos
                 w['btn_analyze'].configure(
                     state="normal",
-                    image=self.ic_analyze if missing_meta else self.ic_analyze_muted
+                    image=self.ic_analyze if missing_meta else self.ic_analyze_normal
                 )
 
                 # WAV: amarillo cuando puede convertir
@@ -3724,11 +3777,26 @@ class YezkaApp(ctk.CTk):
         to_convert = [p for p in self.loaded_paths if not p.lower().endswith('.wav')]
         if not to_convert: return
         
+        self._wav_cancel = False
         self.stop_smart_folder()
         self.show_loading(f"COLA WAV\n0/{len(to_convert)}")
+        self.loading_cancel_btn.pack(pady=(0, 14))
         self.process_next_conversion(to_convert, 0)
 
+    def _cancel_wav_conversion(self):
+        self._wav_cancel = True
+        self.loading_cancel_btn.pack_forget()
+        self.loading_base_msg = "CANCELANDO..."
+
     def process_next_conversion(self, file_list, index):
+        if getattr(self, '_wav_cancel', False):
+            self._wav_cancel = False
+            self.loading_cancel_btn.pack_forget()
+            self.is_wav_all_applied = False
+            self.update_wav_button_state()
+            self.loading_base_msg = "CANCELADO"
+            self.hide_loading()
+            return
         if index >= len(file_list):
             self.is_wav_all_applied = True
             self.show_loading("ACTUALIZANDO\nCARPETA...")
@@ -3741,6 +3809,7 @@ class YezkaApp(ctk.CTk):
         self.after(50, lambda: self.process_next_conversion(file_list, index + 1))
         
     def _finalize_mass_conversion(self):
+        self.loading_cancel_btn.pack_forget()
         existing_paths = []
         for p in self.loaded_paths:
             if os.path.exists(p):
