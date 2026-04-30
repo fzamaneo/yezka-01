@@ -32,9 +32,20 @@ except ImportError:
 # Motor de Audio Pygame
 try:
     os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
+    # Evitar conflicto de SDL2 entre pygame y Homebrew en macOS
+    if sys.platform == 'darwin':
+        import importlib.util as _ilu
+        _spec = _ilu.find_spec('pygame')
+        if _spec:
+            _sdl = os.path.join(os.path.dirname(_spec.origin), '.dylibs', 'libSDL2-2.0.0.dylib')
+            if os.path.exists(_sdl):
+                os.environ.setdefault('SDL_DYNAMIC_API', _sdl)
     import pygame
-    pygame.mixer.init()
-    pygame.mixer.music.set_volume(0.5) 
+    try:
+        pygame.mixer.init()
+        pygame.mixer.music.set_volume(0.5)
+    except pygame.error:
+        pass  # Sin dispositivo de audio — el reproductor se deshabilitará en runtime
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
@@ -122,8 +133,30 @@ class ToolTip:
 
     def showtip(self):
         if self.tooltip_window: return
-        x, y, cx, cy = self.widget.bbox("insert")
-        x += self.widget.winfo_rootx() + 25; y += self.widget.winfo_rooty() + 25
+        try:
+            if not self.widget.winfo_exists():
+                return
+        except Exception:
+            return
+
+        try:
+            bbox = self.widget.bbox("insert")
+        except Exception:
+            bbox = None
+
+        if bbox:
+            x, y, _, _ = bbox
+            x += self.widget.winfo_rootx() + 25
+            y += self.widget.winfo_rooty() + 25
+        else:
+            try:
+                x, y = self.widget.winfo_pointerxy()
+                x += 14
+                y += 18
+            except Exception:
+                x = self.widget.winfo_rootx() + max(12, self.widget.winfo_width() // 2)
+                y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+
         self.tooltip_window = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         try: tw.tk.call("::tk::unsupported::MacWindowStyle", "style", tw._w, "help", "none")
@@ -138,7 +171,16 @@ class ToolTip:
 class SmartFolderHandler(FileSystemEventHandler):
     def __init__(self, add_callback, remove_callback):
         self.add_callback = add_callback; self.remove_callback = remove_callback
-        self.valid_extensions = ('.wav', '.aiff', '.mp3', '.flac')
+        self.valid_extensions = (
+            '.wav', '.aiff', '.aif',
+            '.mp3', '.flac',
+            '.ogg', '.oga', '.opus',
+            '.m4a', '.aac', '.alac',
+            '.wma',
+            '.ape',
+            '.wv',
+            '.dsf',
+        )
 
     def on_created(self, event):
         if not event.is_directory and event.src_path.lower().endswith(self.valid_extensions):
@@ -164,8 +206,8 @@ class YezkaApp(ctk.CTk):
         super().__init__()
         self._init_done = False 
         
-        self.title("YEZKA-01 - v0.9.47 (Color Tags & Rubber Band Select)") 
-        self.geometry("1154x780") 
+        self.title("YEZKA-01 - v0.9.48 (Smart Actions & Camelot Colors)") 
+        self.geometry("1042x700") 
         self.resizable(True, True)
         self.configure(fg_color=BG_MAIN)
 
@@ -174,6 +216,8 @@ class YezkaApp(ctk.CTk):
         self.metadata_cache = {} 
         self.file_data = {} 
         self.session_history = {} 
+        self._last_batch_paths = []   # rutas del último lote aplicado (para deshacer un paso)
+        self.tono_display_mode = "STANDARD"  # STANDARD | CAMELOT
         self.current_local_dir = "" 
 
         self.current_sort_col = "NOMBRE DE ARCHIVOS"
@@ -190,6 +234,20 @@ class YezkaApp(ctk.CTk):
         
         self._progress_loop_id = None
         self.watchdog_shield = set()
+
+        # Preview mode: muestra nombre formateado en lugar del original en la columna NOMBRE
+        self.preview_mode = False
+        self.row_preview_paths = set()
+        self.is_analyzing_all = False
+        self._analyze_cancel = False
+
+        self.valid_extensions = (
+            '.wav', '.aiff', '.aif',
+            '.mp3', '.flac',
+            '.ogg', '.oga', '.opus',
+            '.m4a', '.aac', '.alac',
+            '.wma', '.ape', '.wv', '.dsf',
+        )
 
         self.config_file = os.path.expanduser("~/.yezka_config.json")
         self.default_smart_folder = os.path.expanduser("~/Documents/_ARCHIVOS_YEZKA_")
@@ -208,14 +266,14 @@ class YezkaApp(ctk.CTk):
         
         self.format_options = [
             "Añadir solo metadatos", 
-            "►KEY ►BPM - TITULO", 
-            "►BPM ►KEY - TITULO", 
+            "►TONO ►BPM - TITULO", 
+            "►BPM ►TONO - TITULO", 
             "►BPM - TITULO", 
-            "►KEY - TITULO", 
-            "TITULO - ◄BPM ◄KEY", 
-            "TITULO - ◄KEY ◄BPM", 
+            "►TONO - TITULO", 
+            "TITULO - ◄BPM ◄TONO", 
+            "TITULO - ◄TONO ◄BPM", 
             "TITULO - ◄BPM", 
-            "TITULO - ◄KEY"
+            "TITULO - ◄TONO"
         ]
         
         self.meta_separator_options = ["►", "-", "=", "+", "-►", "Espacio en blanco"]
@@ -226,12 +284,12 @@ class YezkaApp(ctk.CTk):
         self.app_scale = 1.0
         self.bpm_range = "Electrónica (90-170)"
         self.show_log_default = False 
-        self.default_tab_pref = "CARPETA INTELIGENTE"
-        self.default_format_pref = "►KEY ►BPM - TITULO"
+        self.default_tab_pref = "SMART 1"
+        self.default_format_pref = "►TONO ►BPM - TITULO"
         self.meta_separator = "-"
         self.prompt_create_default_folder = True 
         self.first_run_completed = False 
-        self.last_active_tab = "CARPETA INTELIGENTE"
+        self.last_active_tab = "SMART 1"
         
         self.load_config()
         self.load_edit_log()
@@ -250,15 +308,21 @@ class YezkaApp(ctk.CTk):
         self.row_widgets = [] 
         self.visible_paths = [] 
         
-        self.COL_WIDTHS = [28, 575, 75, 60, 60, 40, 192]
+        # Columnas: PLAY | BPM | KEY | FORMATO | NOMBRE | ST | ACCIONES
+        self.COL_WIDTHS = [28, 62, 62, 470, 68, 40, 192]
 
         self.ic_trash = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.TRASH, color=TEXT_NORMAL, size=24), size=(20, 20))
         self.ic_refresh = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.REFRESH, color=ACCENT, size=24), size=(20, 20))
         self.ic_web = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.WORLD_SEARCH, color=TEXT_NORMAL, size=24), size=(18, 18))
+        self.ic_web_accent = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.WORLD_SEARCH, color=ACCENT, size=24), size=(18, 18))
+        self.ic_web_muted = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.WORLD_SEARCH, color=TEXT_MUTED, size=24), size=(18, 18))
         self.ic_analyze = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.WAND, color=ACCENT, size=24), size=(18, 18))
+        self.ic_analyze_muted = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.WAND, color=TEXT_MUTED, size=24), size=(18, 18))
         self.ic_undo_muted = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.ARROW_BACK_UP, color=TEXT_MUTED, size=24), size=(18, 18))
         self.ic_undo_accent = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.ARROW_BACK_UP, color=ACCENT, size=24), size=(18, 18))
         self.ic_undo_red = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.ARROW_BACK_UP, color=COLOR_MODIFIED, size=24), size=(18, 18))
+        self.ic_eye_on  = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.EYE, color=ACCENT, size=24), size=(16, 16))
+        self.ic_eye_off = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.EYE_OFF, color=TEXT_MUTED, size=24), size=(16, 16))
         self.ic_settings = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.SETTINGS, color=TEXT_NORMAL, size=24), size=(22, 22))
         self.ic_folder = ctk.CTkImage(light_image=TablerIcons.load(OutlineIcon.FOLDER, color=TEXT_NORMAL, size=24), size=(18, 18))
         folder_plus_icon = getattr(OutlineIcon, "FOLDER_PLUS", OutlineIcon.FOLDER)
@@ -273,7 +337,7 @@ class YezkaApp(ctk.CTk):
         self.frame_top = ctk.CTkFrame(self, fg_color=BG_MAIN, corner_radius=0)
         self.frame_top.pack(side="top", fill="x", padx=20, pady=(15, 5))
 
-        self.label_title = ctk.CTkLabel(self.frame_top, text="YEZKA-01  //  v0.9.47", font=FONT_TITLE, text_color=TEXT_NORMAL)
+        self.label_title = ctk.CTkLabel(self.frame_top, text="YEZKA-01  //  v0.9.48", font=FONT_TITLE, text_color=TEXT_NORMAL)
         self.label_title.pack(side="left")
 
         self.btn_settings = ctk.CTkButton(self.frame_top, text="", image=self.ic_settings, width=30, height=30, fg_color=BG_MAIN, hover_color=BG_HOVER, command=self.open_general_settings)
@@ -284,7 +348,7 @@ class YezkaApp(ctk.CTk):
         self.frame_toolbar.pack(side="top", pady=(5, 10), padx=20, fill="x")
         
         # FIX v0.9.45: pack_propagate(False) para blindar el contenedor de la zona negra
-        self.frame_tabs_container = ctk.CTkFrame(self.frame_toolbar, fg_color=BG_MAIN, corner_radius=0, height=85)
+        self.frame_tabs_container = ctk.CTkFrame(self.frame_toolbar, fg_color=BG_MAIN, corner_radius=0, height=100)
         self.frame_tabs_container.pack_propagate(False)
         self.frame_tabs_container.pack(side="left", fill="both", expand=True)
         
@@ -292,23 +356,67 @@ class YezkaApp(ctk.CTk):
         self._build_tabs_completely(startup=True)
 
         self.frame_global_tools = ctk.CTkFrame(self.frame_toolbar, fg_color="transparent")
-        self.frame_global_tools.pack(side="right", fill="y", pady=(24,0)) 
-        
-        self.btn_clear = ctk.CTkButton(self.frame_global_tools, text="", image=self.ic_trash, width=36, height=28, fg_color=BG_ELEMENT, hover_color="#1E1E1E", corner_radius=RADIUS, command=self.clear_all, border_width=0)
-        self.btn_clear.pack(side="right", padx=(10, 0))
-        self.tooltip_clear = ToolTip(self.btn_clear, "Vacía la lista de archivos y el registro")
+        self.frame_global_tools.pack(side="right", fill="y", padx=(20, 0))
 
-        self.btn_csv = ctk.CTkButton(self.frame_global_tools, text="CSV", width=60, height=28, fg_color=BG_ELEMENT, hover_color="#1E1E1E", text_color=TEXT_NORMAL, corner_radius=RADIUS, font=FONT_MONO, command=self.select_csv, border_width=0)
-        self.btn_csv.pack(side="right", padx=(10, 0))
-        ToolTip(self.btn_csv, "Aplica etiquetas desde un archivo CSV")
-        
-        self.menu_format = ctk.CTkOptionMenu(self.frame_global_tools, values=self.format_options, variable=ctk.StringVar(value=self.default_format_pref), width=200, height=28, fg_color=BG_ELEMENT, button_color=BG_ELEMENT, button_hover_color=BG_HOVER, dropdown_fg_color=BG_ELEMENT, font=FONT_MONO, text_color=TEXT_NORMAL, command=self.on_format_change)
+        # ── Fila 1: FORMATO ──
+        self.frame_tools_top = ctk.CTkFrame(self.frame_global_tools, fg_color="transparent")
+        self.frame_tools_top.pack(side="top", fill="x", pady=(16, 5))
+
+        ctk.CTkLabel(self.frame_tools_top, text="NOMBRE", font=FONT_MONO_BOLD_SMALL,
+                     text_color=TEXT_MUTED, anchor="w", width=54).pack(side="left", padx=(0, 6))
+
+        self.menu_format = ctk.CTkOptionMenu(self.frame_tools_top, values=self.format_options,
+            variable=ctk.StringVar(value=self.default_format_pref),
+            width=185, height=26, fg_color=BG_ELEMENT, button_color=BG_ELEMENT,
+            button_hover_color=BG_HOVER, dropdown_fg_color=BG_ELEMENT,
+            font=FONT_MONO, text_color=TEXT_NORMAL, command=self.on_format_change)
         self.format_var = self.menu_format._variable
-        self.menu_format.pack(side="right", padx=(10, 0))
-        
-        self.btn_mass_wav = ctk.CTkButton(self.frame_global_tools, text="[ WAV ALL ]", width=90, height=28, fg_color=BG_ELEMENT, hover_color="#1E1E1E", text_color=TEXT_MUTED, state="disabled", corner_radius=RADIUS, font=FONT_MONO_BOLD, command=self.toggle_wav_all, border_width=0)
-        self.btn_mass_wav.pack(side="right", padx=(10, 0))
+        self.menu_format.pack(side="left", padx=(0, 8))
+
+        self.btn_csv = ctk.CTkButton(self.frame_tools_top, text="CSV", width=48, height=26,
+            fg_color=BG_ELEMENT, hover_color="#1E1E1E", text_color=TEXT_NORMAL,
+            corner_radius=RADIUS, font=FONT_MONO, command=self.select_csv, border_width=0)
+        self.btn_csv.pack(side="left")
+        ToolTip(self.btn_csv, "Aplica etiquetas desde un archivo CSV")
+
+        # separador
+        ctk.CTkFrame(self.frame_global_tools, height=1, fg_color="#1E1E1E", corner_radius=0).pack(fill="x", padx=4)
+
+        # ── Fila 2: ACCIONES masivas ──
+        self.frame_tools_bottom = ctk.CTkFrame(self.frame_global_tools, fg_color="transparent")
+        self.frame_tools_bottom.pack(side="top", fill="x", pady=(5, 16))
+
+        ctk.CTkLabel(self.frame_tools_bottom, text="ACCIONES", font=FONT_MONO_BOLD_SMALL,
+                     text_color=TEXT_MUTED, anchor="w", width=54).pack(side="left", padx=(0, 6))
+
+        self.btn_analyze_all = ctk.CTkButton(self.frame_tools_bottom, text="ANALIZAR TODO",
+            image=self.ic_analyze, compound="left",
+            width=134, height=26, fg_color=BG_ELEMENT, hover_color="#1E1E1E",
+            text_color=TEXT_MUTED, state="disabled", corner_radius=RADIUS,
+            font=FONT_MONO_BOLD, command=self.analyze_all_files, border_width=0)
+        self.btn_analyze_all.pack(side="left", padx=(0, 8))
+        ToolTip(self.btn_analyze_all, "Analiza BPM y tono de todos los archivos cargados con Essentia\n(Re-analiza aunque ya tengan datos · Click de nuevo para cancelar)")
+
+        self.btn_mass_wav = ctk.CTkButton(self.frame_tools_bottom, text="WAV ALL",
+            width=74, height=26, fg_color=BG_ELEMENT, hover_color="#1E1E1E",
+            text_color=TEXT_MUTED, state="disabled", corner_radius=RADIUS,
+            font=FONT_MONO_BOLD, command=self.toggle_wav_all, border_width=0)
+        self.btn_mass_wav.pack(side="left", padx=(0, 8))
         ToolTip(self.btn_mass_wav, "Convierte todos los archivos que no sean WAV en la lista a formato WAV")
+
+        self.btn_undo_all = ctk.CTkButton(self.frame_tools_bottom, text="",
+            image=self.ic_undo_muted,
+            width=32, height=26, fg_color=BG_ELEMENT, hover_color="#1E1E1E",
+            text_color=TEXT_MUTED, state="disabled", corner_radius=RADIUS,
+            font=FONT_MONO_BOLD, command=self.undo_last_batch, border_width=0)
+        self.btn_undo_all.pack(side="left", padx=(0, 8))
+        ToolTip(self.btn_undo_all, "Deshacer el último lote aplicado (APLICAR CAMBIOS)")
+
+        self.btn_clear = ctk.CTkButton(self.frame_tools_bottom, text="", image=self.ic_trash,
+            width=32, height=26, fg_color=BG_ELEMENT, hover_color="#1E1E1E",
+            corner_radius=RADIUS, command=self.clear_all, border_width=0)
+        self.btn_clear.pack(side="left")
+        self.tooltip_clear = ToolTip(self.btn_clear, "Vacía la lista de archivos y el registro")
 
         self.frame_log_wrapper = ctk.CTkFrame(self, fg_color="transparent")
         self.frame_log_wrapper.pack(side="bottom", fill="x", padx=20, pady=(0, 15))
@@ -464,7 +572,8 @@ class YezkaApp(ctk.CTk):
 
         self.draw_headers()
         self.build_virtual_rows()
-        
+        self._sync_bpm_key_col_order()
+
         self._init_done = True 
         self.after(50, self._activate_initial_tab)
         
@@ -492,9 +601,9 @@ class YezkaApp(ctk.CTk):
     def _resolve_startup_tab(self):
         if self.default_tab_pref in self.smart_tab_widgets:
             return self.default_tab_pref
-        if self.default_tab_pref == "MODO MANUAL":
-            return "MODO MANUAL"
-        return "CARPETA INTELIGENTE"
+        if self.default_tab_pref == "MANUAL":
+            return "MANUAL"
+        return self._resolve_tab_name(self.default_tab_pref)
 
     def _activate_initial_tab(self):
         if not self.tabs:
@@ -520,25 +629,96 @@ class YezkaApp(ctk.CTk):
         except Exception:
             pass
 
-    def _build_tabs_completely(self, startup=False):
+    def _clip_tab_name(self, name, max_chars=18):
+        name = re.sub(r"\s+", " ", str(name or "")).strip()
+        if len(name) <= max_chars:
+            return name
+        return name[:max(1, max_chars - 3)].rstrip() + "..."
+
+    def _smart_tab_base_name(self, index, path):
+        normalized = os.path.normpath(path) if path else ""
+        base_name = os.path.basename(normalized)
+        if not base_name or base_name == os.curdir:
+            base_name = f"SMART {index + 1}"
+        return self._clip_tab_name(base_name)
+
+    def _smart_tab_names(self):
+        names = []
+        used = {"MANUAL", "+"}
+
+        for index, path in enumerate(self.smart_folders):
+            base_name = self._smart_tab_base_name(index, path)
+            tab_name = base_name
+            suffix_num = 2
+
+            while tab_name in used:
+                suffix = f" {suffix_num}"
+                tab_name = self._clip_tab_name(base_name, max_chars=max(1, 18 - len(suffix))) + suffix
+                suffix_num += 1
+
+            names.append(tab_name)
+            used.add(tab_name)
+
+        return names
+
+    def _smart_tab_name(self, index):
+        names = self._smart_tab_names()
+        if 0 <= index < len(names):
+            return names[index]
+        return f"SMART {index + 1}"
+
+    def _legacy_smart_tab_index(self, tab_name):
+        if tab_name == "SMART 1":
+            return 0
+        match = re.match(r"^SMART\s+(\d+)$", str(tab_name or ""))
+        if match:
+            return int(match.group(1)) - 1
+        return None
+
+    def _fallback_smart_tab_name(self, prefer_last=False):
+        if not self.smart_folders:
+            return "MANUAL"
+        index = len(self.smart_folders) - 1 if prefer_last else 0
+        return self._smart_tab_name(index)
+
+    def _resolve_tab_name(self, tab_name, prefer_last=False):
+        if tab_name == "MANUAL":
+            return "MANUAL"
+        if tab_name in self.smart_tab_widgets:
+            return tab_name
+
+        legacy_index = self._legacy_smart_tab_index(tab_name)
+        if legacy_index is not None and 0 <= legacy_index < len(self.smart_folders):
+            return self._smart_tab_name(legacy_index)
+
+        return self._fallback_smart_tab_name(prefer_last=prefer_last)
+
+    def _current_tab_is_smart(self):
+        try:
+            return self.tabs.get() in self.smart_tab_widgets
+        except Exception:
+            return False
+
+    def _build_tabs_completely(self, startup=False, preferred_tab=None):
         """Fix Definitivo: Borra y recrea el TabView por completo para forzar un repintado seguro y evitar zonas negras"""
-        active_tab = self.default_tab_pref if startup else "CARPETA INTELIGENTE"
+        active_tab = self.default_tab_pref if startup else (preferred_tab or self._fallback_smart_tab_name())
         
         if not startup:
-            try: active_tab = self.tabs.get()
-            except: pass
+            if preferred_tab is None:
+                try: active_tab = self.tabs.get()
+                except: pass
             
             if self.tabs:
                 self.tabs.destroy()
                 self.tabs = None
                 
-        self.tabs = ctk.CTkTabview(self.frame_tabs_container, height=85, fg_color="transparent", bg_color="transparent", segmented_button_fg_color=BG_ELEMENT, segmented_button_selected_color="#2A2A2A", segmented_button_unselected_color=BG_ELEMENT, text_color=TEXT_NORMAL, command=self.on_tab_change)
+        self.tabs = ctk.CTkTabview(self.frame_tabs_container, height=100, fg_color="transparent", bg_color="transparent", segmented_button_fg_color=BG_ELEMENT, segmented_button_selected_color="#2A2A2A", segmented_button_unselected_color=BG_ELEMENT, text_color=TEXT_NORMAL, command=self.on_tab_change)
         self.tabs.pack(side="left", fill="both", expand=True)
         self._align_tabs_left()
 
         self.smart_tab_widgets.clear()
         
-        self.tab_local = self.tabs.add("MODO MANUAL")
+        self.tab_local = self.tabs.add("MANUAL")
         self._build_local_tab_ui()
         
         for i, path in enumerate(self.smart_folders):
@@ -548,8 +728,10 @@ class YezkaApp(ctk.CTk):
         self._style_add_tab_button()
         
         if not startup:
-            if active_tab == "+" or active_tab not in self.smart_tab_widgets and active_tab != "MODO MANUAL":
-                active_tab = f"CARPETA INTELIGENTE {len(self.smart_folders)}" if len(self.smart_folders) > 1 else "CARPETA INTELIGENTE"
+            if active_tab == "+":
+                active_tab = self._fallback_smart_tab_name(prefer_last=True)
+            else:
+                active_tab = self._resolve_tab_name(active_tab, prefer_last=True)
             
             self.update_idletasks()
             self.after(50, lambda t=active_tab: self._delayed_tab_set(t))
@@ -560,6 +742,7 @@ class YezkaApp(ctk.CTk):
     def _delayed_tab_set(self, tab_name):
         """Retardo microscópico para que macOS procese la geometría antes de mostrar el contenido"""
         try:
+            tab_name = self._resolve_tab_name(tab_name, prefer_last=True)
             self.tabs.set(tab_name)
             self._align_tabs_left()
             self.update_idletasks()
@@ -588,7 +771,7 @@ class YezkaApp(ctk.CTk):
         self.lbl_local_path.pack(side="left")
 
     def add_smart_tab_ui(self, index, path):
-        tab_name = "CARPETA INTELIGENTE" if index == 0 else f"CARPETA INTELIGENTE {index+1}"
+        tab_name = self._smart_tab_name(index)
         tab = self.tabs.add(tab_name)
         
         frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -616,9 +799,9 @@ class YezkaApp(ctk.CTk):
         if len(self.smart_folders) >= 5:
             messagebox.showinfo("Límite alcanzado", "Puedes tener un máximo de 5 carpetas inteligentes conectadas.")
             if hasattr(self, 'last_active_tab') and self.last_active_tab != "+":
-                self.tabs.set(self.last_active_tab)
+                self.tabs.set(self._resolve_tab_name(self.last_active_tab))
             else:
-                self.tabs.set("CARPETA INTELIGENTE")
+                self.tabs.set(self._fallback_smart_tab_name())
             return
             
         d = filedialog.askdirectory()
@@ -628,16 +811,31 @@ class YezkaApp(ctk.CTk):
             self.after(10, lambda: self._build_tabs_completely(startup=False))
         else:
             if hasattr(self, 'last_active_tab') and self.last_active_tab != "+":
-                self.tabs.set(self.last_active_tab)
+                self.tabs.set(self._resolve_tab_name(self.last_active_tab))
             else:
-                self.tabs.set("CARPETA INTELIGENTE")
+                self.tabs.set(self._fallback_smart_tab_name())
 
     def remove_smart_folder(self, idx):
         if messagebox.askyesno("Quitar Carpeta", "¿Estás seguro de que quieres desconectar y quitar esta carpeta inteligente de la vista? (Los archivos originales no se borrarán)"):
+            active_tab = self.tabs.get()
+            active_index = self.smart_tab_widgets.get(active_tab, {}).get('index')
             self.stop_smart_folder()
             del self.smart_folders[idx]
+
+            if active_index is None:
+                preferred_tab = active_tab
+            elif active_index == idx:
+                preferred_tab = self._smart_tab_name(min(idx, len(self.smart_folders) - 1))
+            elif active_index > idx:
+                preferred_tab = self._smart_tab_name(active_index - 1)
+            else:
+                preferred_tab = self._smart_tab_name(active_index)
+
+            if self.default_tab_pref not in ["MANUAL"] + self._smart_tab_names():
+                self.default_tab_pref = self._resolve_tab_name(self.default_tab_pref, prefer_last=True)
+
             self.save_config()
-            self.after(10, lambda: self._build_tabs_completely(startup=False))
+            self.after(10, lambda t=preferred_tab: self._build_tabs_completely(startup=False, preferred_tab=t))
 
     def _check_default_folder_startup(self):
         default_folder = self.smart_folders[0]
@@ -651,7 +849,7 @@ class YezkaApp(ctk.CTk):
             self.first_run_completed = True
             self.save_config()
             
-            if self.active_smart_path == default_folder and self.tabs.get() == "CARPETA INTELIGENTE" and not self.loaded_paths and not self.observer and not self.is_loading:
+            if self.active_smart_path == default_folder and self.tabs.get() == self._smart_tab_name(0) and not self.loaded_paths and not self.observer and not self.is_loading:
                 self.start_smart_folder()
         else:
             if not os.path.exists(default_folder) and self.prompt_create_default_folder:
@@ -660,7 +858,7 @@ class YezkaApp(ctk.CTk):
                     try:
                         os.makedirs(default_folder, exist_ok=True)
                         self.log_message("> Carpeta por defecto _ARCHIVOS_YEZKA_ creada.")
-                        if self.active_smart_path == default_folder and self.tabs.get() == "CARPETA INTELIGENTE" and not self.loaded_paths and not self.observer and not self.is_loading:
+                        if self.active_smart_path == default_folder and self.tabs.get() == self._smart_tab_name(0) and not self.loaded_paths and not self.observer and not self.is_loading:
                             self.start_smart_folder()
                     except Exception as e:
                         self.log_message(f"> Error al crear carpeta por defecto: {e}")
@@ -697,6 +895,8 @@ class YezkaApp(ctk.CTk):
                 self.log_message("> El formato seleccionado ya coincide con los archivos cargados.")
 
         self.update_apply_button_state()
+        self.draw_headers()
+        self._sync_bpm_key_col_order()
         self.refresh_virtual_grid()
 
     def toggle_log(self):
@@ -918,16 +1118,11 @@ class YezkaApp(ctk.CTk):
 
     def get_audio_duration(self, filepath):
         try:
-            from mutagen.wave import WAVE
-            from mutagen.aiff import AIFF
-            from mutagen.mp3 import MP3
-            from mutagen.flac import FLAC
-            ext = os.path.splitext(filepath)[1].lower()
-            if ext == '.mp3': return MP3(filepath).info.length
-            elif ext == '.wav': return WAVE(filepath).info.length
-            elif ext in ('.aiff', '.aif'): return AIFF(filepath).info.length
-            elif ext == '.flac': return FLAC(filepath).info.length
-        except: return 0.0
+            from mutagen import File as MutagenFile
+            audio = MutagenFile(filepath)
+            if audio and hasattr(audio, 'info') and hasattr(audio.info, 'length'):
+                return audio.info.length
+        except Exception: pass
         return 0.0
 
     def on_progress_press(self, event):
@@ -1021,15 +1216,21 @@ class YezkaApp(ctk.CTk):
             self._progress_loop_id = None
             
         if getattr(self, 'pygame_active', False):
-            if self.is_playing:
-                pygame.mixer.music.stop()
             try:
-                pygame.mixer.music.unload()
-            except AttributeError:
+                if self.is_playing:
+                    pygame.mixer.music.stop()
+                try:
+                    pygame.mixer.music.unload()
+                except Exception:
+                    pass
+            except Exception:
                 pass
-            
+
             if force_release:
-                pygame.mixer.quit()
+                try:
+                    pygame.mixer.quit()
+                except Exception:
+                    pass
                 self.pygame_active = False
 
         self.is_playing = False
@@ -1126,8 +1327,20 @@ class YezkaApp(ctk.CTk):
                     self.app_scale = data.get("app_scale", 1.0)
                     self.bpm_range = data.get("bpm_range", "Electrónica (90-170)")
                     self.show_log_default = data.get("show_log_default", False)
-                    self.default_tab_pref = data.get("default_tab_pref", "CARPETA INTELIGENTE")
-                    self.default_format_pref = data.get("default_format_pref", "►KEY ►BPM - TITULO")
+                    _tab_compat = {"MODO MANUAL": "MANUAL", "CARPETA INTELIGENTE": "SMART 1",
+                                   **{f"CARPETA INTELIGENTE {i}": f"SMART {i}" for i in range(2, 10)}}
+                    raw_pref = data.get("default_tab_pref", "SMART 1")
+                    self.default_tab_pref = _tab_compat.get(raw_pref, raw_pref)
+                    _compat_fmt = {
+                        "►KEY ►BPM - TITULO": "►TONO ►BPM - TITULO",
+                        "►BPM ►KEY - TITULO": "►BPM ►TONO - TITULO",
+                        "►KEY - TITULO": "►TONO - TITULO",
+                        "TITULO - ◄BPM ◄KEY": "TITULO - ◄BPM ◄TONO",
+                        "TITULO - ◄KEY ◄BPM": "TITULO - ◄TONO ◄BPM",
+                        "TITULO - ◄KEY": "TITULO - ◄TONO",
+                    }
+                    raw_fmt = data.get("default_format_pref", "►TONO ►BPM - TITULO")
+                    self.default_format_pref = _compat_fmt.get(raw_fmt, raw_fmt)
                     self.meta_separator = data.get("meta_separator", "-")
                     self.prompt_create_default_folder = data.get("prompt_create_default_folder", True)
                     self.first_run_completed = data.get("first_run_completed", False)
@@ -1304,11 +1517,15 @@ class YezkaApp(ctk.CTk):
                        font=("Menlo", 11), bd=0, relief="flat")
 
         sel_count = len(self.selected_paths)
-        label_color = f"Asignar color ({sel_count} archivo{'s' if sel_count > 1 else ''})"
+        s = 's' if sel_count > 1 else ''
+        label_color = f"Asignar color ({sel_count} archivo{s})"
         menu.add_command(label=label_color, command=self.show_color_picker)
         menu.add_separator()
+        menu.add_command(label=f"Analizar BPM y Tono ({sel_count} archivo{s})", command=self._ctx_analyze_selected)
+        menu.add_command(label=f"Borrar BPM ({sel_count} archivo{s})", command=self._ctx_clear_bpm_selected)
+        menu.add_command(label=f"Borrar Tono ({sel_count} archivo{s})", command=self._ctx_clear_tono_selected)
+        menu.add_separator()
         menu.add_command(label="Buscar en navegador", command=lambda: self.handle_web(row_idx))
-        menu.add_command(label="Analizar audio", command=lambda: self.handle_analyze(row_idx))
         menu.add_separator()
         menu.add_command(label="Abrir en Finder", command=lambda: self.open_finder(os.path.dirname(path)))
 
@@ -1337,13 +1554,14 @@ class YezkaApp(ctk.CTk):
         tab_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         tab_frame.pack(pady=5, fill="x", padx=20)
         ctk.CTkLabel(tab_frame, text="Pestaña Inicial:", font=FONT_MONO, text_color=TEXT_NORMAL, width=150, anchor="w").pack(side="left")
-        tab_options = ["MODO MANUAL"] + list(self.smart_tab_widgets.keys())
+        tab_options = ["MANUAL"] + list(self.smart_tab_widgets.keys())
         tab_menu = ctk.CTkOptionMenu(tab_frame, values=tab_options, fg_color=BG_ELEMENT, button_color=BG_ELEMENT, button_hover_color=BG_HOVER)
         
-        if self.default_tab_pref in tab_options:
-            tab_menu.set(self.default_tab_pref)
+        resolved_default_tab = self._resolve_tab_name(self.default_tab_pref)
+        if resolved_default_tab in tab_options:
+            tab_menu.set(resolved_default_tab)
         else:
-            tab_menu.set("CARPETA INTELIGENTE")
+            tab_menu.set(self._fallback_smart_tab_name())
             
         tab_menu.pack(side="right", fill="x", expand=True)
 
@@ -1464,15 +1682,14 @@ class YezkaApp(ctk.CTk):
         self.last_active_tab = current_tab
         self.clear_all()
         
-        if current_tab.startswith("CARPETA INTELIGENTE"):
+        if current_tab in self.smart_tab_widgets:
             self.lbl_empty_instruction.configure(text="\n> AGREGA O DESCARGA ARCHIVOS EN TU CARPETA INTELIGENTE PARA SINCRONIZARLOS AUTOMÁTICAMENTE.")
             self.btn_clear.configure(image=self.ic_refresh, command=self.refresh_smart_folder)
             self.tooltip_clear.text = "Forzar escaneo de la Carpeta Inteligente"
-            
-            if current_tab in self.smart_tab_widgets:
-                idx = self.smart_tab_widgets[current_tab]['index']
-                self.active_smart_path = self.smart_folders[idx]
-                self.start_smart_folder()
+
+            idx = self.smart_tab_widgets[current_tab]['index']
+            self.active_smart_path = self.smart_folders[idx]
+            self.start_smart_folder()
         else:
             self.lbl_empty_instruction.configure(text="\n> SELECCIONA CARPETA O ARCHIVO EN LA BARRA SUPERIOR.")
             self.btn_clear.configure(image=self.ic_trash, command=self.clear_all)
@@ -1484,20 +1701,28 @@ class YezkaApp(ctk.CTk):
         self.clear_all(); self.start_smart_folder()
 
     def change_smart_folder(self, idx):
+        old_tab_name = self._smart_tab_name(idx)
         f = filedialog.askdirectory()
         if f:
+            active_tab = self.tabs.get()
+            active_index = self.smart_tab_widgets.get(active_tab, {}).get('index')
             self.stop_smart_folder()
             self.smart_folders[idx] = f
+
+            new_tab_name = self._smart_tab_name(idx)
+            if self.default_tab_pref == old_tab_name:
+                self.default_tab_pref = new_tab_name
+
             self.save_config()
-            
-            tab_name = "CARPETA INTELIGENTE" if idx == 0 else f"CARPETA INTELIGENTE {idx+1}"
-            self.smart_tab_widgets[tab_name]['lbl_path'].configure(text=f"Ruta: {f}")
-            self.log_message(f"> {tab_name} configurada en: {f}")
-            
-            if self.tabs.get() == tab_name:
-                self.active_smart_path = f
-                self.clear_all()
-                self.start_smart_folder()
+            self.log_message(f"> {new_tab_name} configurada en: {f}")
+
+            if active_tab == old_tab_name:
+                preferred_tab = new_tab_name
+            elif active_index is not None:
+                preferred_tab = self._smart_tab_name(active_index)
+            else:
+                preferred_tab = active_tab
+            self.after(10, lambda t=preferred_tab: self._build_tabs_completely(startup=False, preferred_tab=t))
 
     def start_smart_folder(self):
         self.stop_smart_folder() 
@@ -1505,7 +1730,7 @@ class YezkaApp(ctk.CTk):
             self.log_message(f"> [AVISO] Carpeta inteligente no existe: {self.active_smart_path}")
             return
 
-        existing_files = [os.path.join(self.active_smart_path, f) for f in os.listdir(self.active_smart_path) if f.lower().endswith(('.wav', '.aiff', '.mp3', '.flac'))]
+        existing_files = [os.path.join(self.active_smart_path, f) for f in os.listdir(self.active_smart_path) if f.lower().endswith(self.valid_extensions)]
         if existing_files:
             self.show_loading("LEYENDO\nCARPETA...")
             threading.Thread(target=self._thread_start_smart, args=(existing_files,), daemon=True).start()
@@ -1519,13 +1744,15 @@ class YezkaApp(ctk.CTk):
 
     def _finish_start_smart(self, new_paths, new_data):
         self._sync_files_data(new_paths, new_data)
-        # Auto-ordenar: editados recientemente arriba, nuevos al fondo
+        # Auto-ordenar: pendientes arriba, luego guardados, luego sin cambios
         self.current_sort_col = "ST"
         self.sort_asc = False
-        self.loaded_paths.sort(
-            key=lambda p: self.persistent_edit_log.get(p, ""),
-            reverse=True
-        )
+        def _st_priority(p):
+            estado = self.file_data[p].get('estado', TEXT_MUTED)
+            if estado == COLOR_MODIFIED: return 2
+            if estado == COLOR_SAVED: return 1
+            return 0
+        self.loaded_paths.sort(key=_st_priority, reverse=True)
         self.top_index = 0
         self.draw_headers()
         self.refresh_virtual_grid()
@@ -1591,6 +1818,7 @@ class YezkaApp(ctk.CTk):
                 self.stop_audio()
                 
             self.loaded_paths.remove(filepath)
+            self.row_preview_paths.discard(filepath)
             self.file_data.pop(filepath, None); self.session_history.pop(filepath, None); self.metadata_cache.pop(filepath, None)
             self._update_loaded_count_display()
             self.refresh_virtual_grid(); self.update_apply_button_state(); self.update_wav_button_state()
@@ -1664,6 +1892,68 @@ class YezkaApp(ctk.CTk):
                 
         return res.strip(strip_chars)
 
+    _CAMELOT_KEY_DATA = {
+        # Colores basados en la rueda Camelot oficial (mixedinkey.com)
+        # Gradiente en sentido horario desde 1A/1B (verde-menta, arriba derecha)
+        "ABMIN": ("1A",  "#5BC8AC"), "BMAJ":  ("1B",  "#5BC8AC"),  # verde-menta
+        "EBMIN": ("2A",  "#8DC83F"), "GBMAJ": ("2B",  "#8DC83F"),  # verde lima
+        "BBMIN": ("3A",  "#C8DC3F"), "DBMAJ": ("3B",  "#C8DC3F"),  # amarillo-verde
+        "FMIN":  ("4A",  "#DCDC5A"), "ABMAJ": ("4B",  "#DCDC5A"),  # amarillo
+        "CMIN":  ("5A",  "#E8B050"), "EBMAJ": ("5B",  "#E8B050"),  # naranja-amarillo
+        "GMIN":  ("6A",  "#E87878"), "BBMAJ": ("6B",  "#E87878"),  # salmon-rosa
+        "DMIN":  ("7A",  "#C878B4"), "FMAJ":  ("7B",  "#C878B4"),  # magenta-rosa
+        "AMIN":  ("8A",  "#9878C8"), "CMAJ":  ("8B",  "#9878C8"),  # púrpura
+        "EMIN":  ("9A",  "#7878C8"), "GMAJ":  ("9B",  "#7878C8"),  # azul-púrpura
+        "BMIN":  ("10A", "#5878C8"), "DMAJ":  ("10B", "#5878C8"),  # azul
+        "GBMIN": ("11A", "#78B0E8"), "AMAJ":  ("11B", "#78B0E8"),  # azul claro
+        "DBMIN": ("12A", "#78D4E8"), "EMAJ":  ("12B", "#78D4E8"),  # cian
+    }
+
+    _CAMELOT_KEY_ALIASES = {
+        "G#MIN": "ABMIN",
+        "D#MIN": "EBMIN",
+        "A#MIN": "BBMIN",
+        "C#MAJ": "DBMAJ",
+        "D#MAJ": "EBMAJ",
+        "A#MAJ": "BBMAJ",
+        "F#MAJ": "GBMAJ",
+        "F#MIN": "GBMIN",
+        "C#MIN": "DBMIN",
+    }
+
+    def _normalize_key_display(self, key):
+        """Normaliza la tonalidad igual que al escribir en el archivo:
+        sin espacios, MAYÚSCULAS, MAJOR→MAJ, MINOR→MIN,
+        y la 'b' de bemol (Bb, Eb, Ab…) en minúscula."""
+        if not key: return ""
+        k = key.strip().replace(" ", "").upper()
+        k = k.replace("MAJOR", "MAJ").replace("MINOR", "MIN")
+        # Restaurar 'b' minúscula para notas bemol (ej. BB→Bb, EB→Eb)
+        import re
+        k = re.sub(r'^([A-G])B', lambda m: m.group(1) + 'b', k)
+        return k
+
+    def _camelot_entry_for_key(self, key):
+        """Devuelve (codigo, color) Camelot para una tonalidad estándar normalizada."""
+        norm = self._normalize_key_display(key)
+        if not norm:
+            return None, None
+        lookup = self._CAMELOT_KEY_ALIASES.get(norm.upper(), norm.upper())
+        return self._CAMELOT_KEY_DATA.get(lookup, (None, None))
+
+    def _key_display_value(self, key):
+        """Texto visible en la columna TONO según el modo de visualización."""
+        norm = self._normalize_key_display(key)
+        if self.tono_display_mode == "CAMELOT":
+            code, _ = self._camelot_entry_for_key(norm)
+            return code or norm
+        return norm
+
+    def _key_display_color(self, key, fallback_color):
+        """Color Camelot de la tonalidad; si no hay match, usa fallback."""
+        _, color = self._camelot_entry_for_key(key)
+        return color or fallback_color
+
     def _build_formatted_name(self, pure_name, bp, ky, fmt):
         if fmt == "Añadir solo metadatos":
             return pure_name
@@ -1672,32 +1962,32 @@ class YezkaApp(ctk.CTk):
         if sep == "Espacio en blanco":
             sep = " "
             
-        kn = ky.replace(" ", "").upper().replace("MAJOR", "MAJ").replace("MINOR", "MIN") if ky else ""
+        kn = self._normalize_key_display(ky)
         b_name = pure_name
         
         res = b_name
         prefix_parts = []
         suffix_parts = []
         
-        if fmt == "►KEY ►BPM - TITULO":
+        if fmt == "►TONO ►BPM - TITULO":
             if kn: prefix_parts.append(kn)
             if bp: prefix_parts.append(bp)
-        elif fmt == "►BPM ►KEY - TITULO":
+        elif fmt == "►BPM ►TONO - TITULO":
             if bp: prefix_parts.append(bp)
             if kn: prefix_parts.append(kn)
         elif fmt == "►BPM - TITULO":
             if bp: prefix_parts.append(bp)
-        elif fmt == "►KEY - TITULO":
+        elif fmt == "►TONO - TITULO":
             if kn: prefix_parts.append(kn)
-        elif fmt == "TITULO - ◄BPM ◄KEY":
+        elif fmt == "TITULO - ◄BPM ◄TONO":
             if bp: suffix_parts.append(bp)
             if kn: suffix_parts.append(kn)
-        elif fmt == "TITULO - ◄KEY ◄BPM":
+        elif fmt == "TITULO - ◄TONO ◄BPM":
             if kn: suffix_parts.append(kn)
             if bp: suffix_parts.append(bp)
         elif fmt == "TITULO - ◄BPM":
             if bp: suffix_parts.append(bp)
-        elif fmt == "TITULO - ◄KEY":
+        elif fmt == "TITULO - ◄TONO":
             if kn: suffix_parts.append(kn)
             
         if prefix_parts:
@@ -1718,6 +2008,20 @@ class YezkaApp(ctk.CTk):
         
         return res
 
+    def _is_name_preview_on(self, path):
+        return self.preview_mode or path in self.row_preview_paths
+
+    def _display_name_for_mode(self, data, preview_on):
+        if preview_on:
+            # Ojo ON: muestra el nombre real en el archivo (formateado con BPM/KEY)
+            # Para archivos pre-formateados aún sin re-analizar, name == pure_name → usa orig_name
+            if data.get('is_formatted') and data['name'] == data.get('pure_name', ''):
+                return data['orig_name']
+            return data['name']
+        else:
+            # Ojo OFF (defecto): muestra el nombre limpio sin decoración BPM/KEY
+            return data.get('pure_name') or data['orig_name']
+
     def _update_loaded_count_display(self):
         if not self.label_loaded_count:
             return
@@ -1725,24 +2029,51 @@ class YezkaApp(ctk.CTk):
         total = len(self.loaded_paths)
 
         try:
-            self.label_loaded_count.configure(text=f"(ARCHIVOS CARGADOS: {total})", text_color=TEXT_MUTED)
+            total_secs = sum(self.get_audio_duration(p) for p in self.loaded_paths)
+            h = int(total_secs // 3600)
+            m = int((total_secs % 3600) // 60)
+            s = int(total_secs % 60)
+            if h > 0:
+                duration_str = f"{h}h {m}m"
+            elif m > 0:
+                duration_str = f"{m}m {s:02d}s"
+            else:
+                duration_str = f"{s}s"
+            self.label_loaded_count.configure(
+                text=f"({total} archivos · {duration_str})", text_color=TEXT_MUTED)
         except Exception:
-            pass
+            self.label_loaded_count.configure(
+                text=f"({total} archivos)", text_color=TEXT_MUTED)
 
     def draw_headers(self):
         for widget in self.frame_headers.winfo_children(): widget.destroy()
         self.label_loaded_count = None
-        
-        for i, w in enumerate(self.COL_WIDTHS): 
+
+        for i, w in enumerate(self.COL_WIDTHS):
             self.frame_headers.grid_columnconfigure(i, minsize=w + 10, weight=0)
             self.rows_frame.grid_columnconfigure(i, minsize=w + 10, weight=0)
-            
-        headers_texts = ["", "NOMBRE DE ARCHIVOS", "FORMATO", "TEMPO", "KEY", "ST", "ACCIONES"]
+
+        # Columnas: PLAY | BPM | TONO | NOMBRE | FORMATO | ST | ACCIONES
+        # El orden BPM/TONO refleja el formato activo; columna inactiva aparece atenuada
+        fmt_now = self.format_var.get()
+        fu = fmt_now.upper()
+        ki, bi = fu.find("TONO"), fu.find("BPM")
+        _tono_first = ki != -1 and (bi == -1 or ki < bi)
+        c1, c2 = ("TONO", "BPM") if _tono_first else ("BPM", "TONO")
+        _bpm_active, _key_active = self._fmt_active_fields(fmt_now)
+        headers_texts = ["", c1, c2, "NOMBRE DE ARCHIVOS", "FORMATO", "ST", "ACCIONES"]
+        _col_active = {c1: (_key_active if _tono_first else _bpm_active),
+                       c2: (_bpm_active if _tono_first else _key_active)}
+
         for i, text in enumerate(headers_texts):
             hf = ctk.CTkFrame(self.frame_headers, fg_color="transparent", width=self.COL_WIDTHS[i], height=24)
             hf.grid_propagate(False)
-            hf.grid(row=0, column=i, sticky="" if text == "ST" else "w", padx=5) 
-            
+            hf.grid(row=0, column=i, sticky="" if text == "ST" else "w", padx=5)
+
+            # Columna 0: vacía (solo ícono de play en las filas)
+            if i == 0:
+                continue
+
             if text == "NOMBRE DE ARCHIVOS":
                 header_content = ctk.CTkFrame(hf, fg_color="transparent")
                 header_content.pack(fill="both", expand=True)
@@ -1761,6 +2092,22 @@ class YezkaApp(ctk.CTk):
                     command=lambda t=text: self.sort_grid(t)
                 )
                 btn.pack(side="left")
+                btn.bind("<Button-2>", lambda e, c=text: self._show_sort_menu(c, e))
+                btn.bind("<Button-3>", lambda e, c=text: self._show_sort_menu(c, e))
+
+                # Botón ojo global (toggle preview para todas las filas)
+                self.btn_header_eye = ctk.CTkButton(
+                    header_content,
+                    text="",
+                    image=self.ic_eye_on if self.preview_mode else self.ic_eye_off,
+                    width=24, height=24,
+                    fg_color="transparent",
+                    hover_color=BG_HOVER,
+                    border_width=0,
+                    command=self.toggle_preview_mode
+                )
+                self.btn_header_eye.pack(side="left", padx=(6, 0))
+                ToolTip(self.btn_header_eye, "Alternar vista: nombre original ↔ nombre final (previsualización)")
 
                 self.label_loaded_count = ctk.CTkLabel(
                     header_content,
@@ -1772,59 +2119,90 @@ class YezkaApp(ctk.CTk):
                 )
                 self.label_loaded_count.pack(side="right", padx=(8, 0))
                 self._update_loaded_count_display()
+
             elif text and text != "ACCIONES":
                 arrow = " ↑" if self.current_sort_col == text and self.sort_asc else (" ↓" if self.current_sort_col == text else "")
                 st_active = (text == "ST" and self.current_sort_col == "ST")
-                hdr_color = COLOR_HISTORY if st_active else TEXT_MUTED
-                btn = ctk.CTkButton(hf, text=text + arrow, font=FONT_MONO_BOLD, text_color=hdr_color, fg_color="transparent", hover_color=BG_HOVER, border_width=0, height=24, anchor="center" if text == "ST" else "w", command=lambda t=text: self.sort_grid(t))
+                # Atenuar header si la columna no participa en el formato activo
+                _is_col_active = _col_active.get(text, True)
+                hdr_color = COLOR_HISTORY if st_active else (TEXT_MUTED if _is_col_active else "#252525")
+                btn = ctk.CTkButton(hf, text=text + arrow, font=FONT_MONO_BOLD, text_color=hdr_color,
+                    fg_color="transparent", hover_color=BG_HOVER, border_width=0, height=24,
+                    anchor="center" if text == "ST" else "w",
+                    command=lambda t=text: self.sort_grid(t))
                 btn.place(relx=0.5 if text == "ST" else 0.0, rely=0.5, anchor="center" if text == "ST" else "w")
+                if text == "BPM":
+                    btn.bind("<Button-2>", lambda e, c=text: self._show_sort_menu(c, e))
+                    btn.bind("<Button-3>", lambda e, c=text: self._show_sort_menu(c, e))
+                if text == "TONO":
+                    btn.bind("<Button-2>", self._show_tono_mode_menu)
+                    btn.bind("<Button-3>", self._show_tono_mode_menu)
+                    ToolTip(btn, f"Click derecho: modo TONO ({self.tono_display_mode})")
                 if text == "ST":
-                    ToolTip(btn, "Estado del archivo (click para ordenar por historial):\n● Rojo: cambios pendientes\n● Verde: guardado en sesión actual\n● Azul: editado en sesión anterior\n● Gris: sin cambios")
+                    ToolTip(btn, "Estado del archivo — click para ordenar:\n↑ Pendientes arriba → Aplicados → Sin cambios\n\n● Rojo: cambios sin aplicar\n● Verde: aplicado (esta sesión o anteriores)\n● Gris: sin cambios")
             elif text:
-                lbl = ctk.CTkLabel(hf, text=text, font=FONT_MONO_BOLD, text_color=TEXT_MUTED)
-                lbl.place(relx=0.5 if text == "ST" else 0.0, rely=0.5, anchor="center" if text == "ST" else "w")
+                if text == "ACCIONES":
+                    # Checkbox alineado con el centro del chk de cada fila dentro de ACCIONES.
+                    # 32+4 + 32+4 + 32+4 + 40+4 = 152; el centro del chk queda en 168/192 = 0.875.
+                    self._chk_all_canvas = tk.Canvas(hf, width=16, height=16, bg=BG_MAIN, highlightthickness=0, bd=0, cursor="hand2")
+                    self._chk_all_canvas.place(relx=0.875, rely=0.5, anchor="center")
+                    self._draw_chk_all()
+                    self._chk_all_canvas.bind("<Button-1>", lambda e: self._toggle_select_all())
+                    ToolTip(self._chk_all_canvas, "Seleccionar / deseleccionar todos los archivos")
+                else:
+                    lbl = ctk.CTkLabel(hf, text=text, font=FONT_MONO_BOLD, text_color=TEXT_MUTED)
+                    lbl.place(relx=0.5 if text == "ST" else 0.0, rely=0.5, anchor="center" if text == "ST" else "w")
 
     def build_virtual_rows(self):
         for i in range(self.NUM_VISIBLE_ROWS):
-            row_widgets = {}
-            
+            # Orden: PLAY | BPM | KEY | NOMBRE | FORMATO | ST | ACCIONES
             btn_play = ctk.CTkButton(self.rows_frame, text="", image=self.ic_play, width=self.COL_WIDTHS[0], height=28, fg_color="transparent", hover_color=BG_HOVER, corner_radius=RADIUS)
             btn_play.grid(row=i, column=0, padx=5, pady=(2, 2), sticky="w")
-            
-            e_name = YezkaEntry(self.rows_frame, width=self.COL_WIDTHS[1], height=28, fg_color=BG_ELEMENT, border_width=0, font=FONT_NAME, corner_radius=RADIUS)
-            e_name.grid(row=i, column=1, padx=5, pady=(2, 2), sticky="w")
-            
-            tag_lbl = ctk.CTkLabel(self.rows_frame, width=self.COL_WIDTHS[2], height=28, fg_color=BG_ELEMENT, corner_radius=RADIUS, font=FONT_MONO, text="")
-            tag_lbl.grid(row=i, column=2, padx=5, pady=(2, 2), sticky="w")
-            
-            e_bpm = YezkaEntry(self.rows_frame, width=self.COL_WIDTHS[3], height=28, fg_color=BG_ELEMENT, border_width=0, corner_radius=RADIUS, font=FONT_MONO)
-            e_bpm.grid(row=i, column=3, padx=5, pady=(2, 2), sticky="w")
-            
-            e_key = YezkaEntry(self.rows_frame, width=self.COL_WIDTHS[4], height=28, fg_color=BG_ELEMENT, border_width=0, corner_radius=RADIUS, font=FONT_MONO)
-            e_key.grid(row=i, column=4, padx=5, pady=(2, 2), sticky="w")
-            
+
+            e_bpm = YezkaEntry(self.rows_frame, width=self.COL_WIDTHS[1], height=28, fg_color=BG_ELEMENT, border_width=0, corner_radius=RADIUS, font=FONT_MONO)
+            e_bpm.grid(row=i, column=1, padx=5, pady=(2, 2), sticky="w")
+
+            e_key = YezkaEntry(self.rows_frame, width=self.COL_WIDTHS[2], height=28, fg_color=BG_ELEMENT, border_width=0, corner_radius=RADIUS, font=FONT_MONO)
+            e_key.grid(row=i, column=2, padx=5, pady=(2, 2), sticky="w")
+
+            # Contenedor del campo nombre + botón ojo por fila
+            name_frame = ctk.CTkFrame(self.rows_frame, fg_color="transparent", width=self.COL_WIDTHS[3], height=28)
+            name_frame.grid_propagate(False)
+            name_frame.grid(row=i, column=3, padx=5, pady=(2, 2), sticky="w")
+
+            e_name = YezkaEntry(name_frame, width=self.COL_WIDTHS[3] - 34, height=28, fg_color=BG_ELEMENT, border_width=0, font=FONT_NAME, corner_radius=RADIUS)
+            e_name.pack(side="left")
+
+            bt_eye = ctk.CTkButton(name_frame, text="", image=self.ic_eye_off, width=28, height=28,
+                fg_color="transparent", hover_color=BG_HOVER, corner_radius=RADIUS, border_width=0)
+            bt_eye.pack(side="left", padx=(2, 0))
+            ToolTip(bt_eye, "Previsualizar nombre final ↔ nombre original")
+
+            tag_lbl = ctk.CTkLabel(self.rows_frame, width=self.COL_WIDTHS[4], height=28, fg_color=BG_ELEMENT, corner_radius=RADIUS, font=FONT_MONO, text="")
+            tag_lbl.grid(row=i, column=4, padx=5, pady=(2, 2), sticky="w")
+
             l_st = ctk.CTkLabel(self.rows_frame, text="●", width=self.COL_WIDTHS[5], font=("monospace", 14))
-            l_st.grid(row=i, column=5, padx=5, pady=(2, 2)) 
-            
+            l_st.grid(row=i, column=5, padx=5, pady=(2, 2))
+
             af = ctk.CTkFrame(self.rows_frame, fg_color="transparent", width=self.COL_WIDTHS[6], height=28)
             af.grid_propagate(False)
             af.grid(row=i, column=6, padx=5, pady=(2, 2), sticky="w")
-            
+
             bt_u = ctk.CTkButton(af, text="", image=self.ic_undo_muted, width=32, height=28, fg_color=BG_ELEMENT, border_width=0, hover_color="#1E1E1E", corner_radius=RADIUS)
             bt_u.pack(side="left", padx=(0, 4))
-            ToolTip(bt_u, "Reiniciar o abortar cambios")
+            ToolTip(bt_u, "Descartar cambios pendientes / Revertir al nombre original\n● Amarillo: hay algo que deshacer")
 
             bt_web = ctk.CTkButton(af, text="", image=self.ic_web, width=32, height=28, fg_color=BG_ELEMENT, border_width=0, hover_color="#1E1E1E", corner_radius=RADIUS)
             bt_web.pack(side="left", padx=(0, 4))
-            ToolTip(bt_web, "Buscar BPM/Key en navegador")
-            
+            ToolTip(bt_web, "Buscar BPM/Tono en navegador\n● Amarillo: faltan datos de BPM o Tono")
+
             bt_analyze = ctk.CTkButton(af, text="", image=self.ic_analyze, width=32, height=28, fg_color=BG_ELEMENT, border_width=0, hover_color="#1E1E1E", corner_radius=RADIUS)
             bt_analyze.pack(side="left", padx=(0, 4))
-            ToolTip(bt_analyze, "Analizar Audio Localmente")
-            
+            ToolTip(bt_analyze, "Analizar BPM y Tono localmente (Essentia)\n● Amarillo: faltan datos de BPM o Tono")
+
             bt_w = ctk.CTkButton(af, text="WAV", width=40, height=28, fg_color=BG_ELEMENT, border_width=0, hover_color="#1E1E1E", corner_radius=RADIUS, font=FONT_MONO)
             bt_w.pack(side="left", padx=(0, 4))
-            ToolTip(bt_w, "Convertir a WAV")
+            ToolTip(bt_w, "Convertir a WAV\n● Amarillo: el archivo puede convertirse")
 
             chk_wrap = ctk.CTkFrame(af, width=32, height=28, fg_color=BG_ELEMENT, corner_radius=RADIUS)
             chk_wrap.pack(side="left")
@@ -1838,7 +2216,6 @@ class YezkaApp(ctk.CTk):
             e_name.bind("<Return>", lambda e, idx=i: self.stage_row_changes(idx))
             e_bpm.bind("<Return>", lambda e, idx=i: self.stage_row_changes(idx))
             e_key.bind("<Return>", lambda e, idx=i: self.stage_row_changes(idx))
-
             e_name.bind("<FocusOut>", lambda e, idx=i: self.stage_row_changes_if_needed(idx))
             e_bpm.bind("<FocusOut>", lambda e, idx=i: self.stage_row_changes_if_needed(idx))
             e_key.bind("<FocusOut>", lambda e, idx=i: self.stage_row_changes_if_needed(idx))
@@ -1848,38 +2225,67 @@ class YezkaApp(ctk.CTk):
             bt_web.configure(command=lambda idx=i: self.handle_web(idx))
             bt_analyze.configure(command=lambda idx=i: self.handle_analyze(idx))
             bt_w.configure(command=lambda idx=i: self.handle_wav(idx))
+            bt_eye.configure(command=lambda idx=i: self.toggle_row_preview(idx))
+
             for widget in (chk_wrap, chk):
                 widget.bind("<Button-1>", lambda e, idx=i: self._toggle_row_selection(idx))
                 widget.bind("<Enter>", lambda e, idx=i: self._hover_in_checkbox(idx))
                 widget.bind("<Leave>", lambda e, idx=i: self._hover_out_checkbox(idx))
                 widget.bind("<Button-2>", lambda e, idx=i: self.show_context_menu(idx, e))
                 widget.bind("<Button-3>", lambda e, idx=i: self.show_context_menu(idx, e))
-            
-            # Widgets no-editables: hover + selección completa
-            non_entry_widgets = [btn_play, tag_lbl, l_st, af, bt_u, bt_web, bt_analyze, bt_w]
+
+            non_entry_widgets = [btn_play, tag_lbl, l_st, af, bt_u, bt_web, bt_analyze, bt_w, name_frame, bt_eye]
             for widget in non_entry_widgets:
                 widget.bind("<Enter>", lambda e, idx=i: self.hover_in_row(idx))
                 widget.bind("<Leave>", lambda e, idx=i: self.hover_out_row(idx))
+                widget.bind("<Button-2>", lambda e, idx=i: self.show_context_menu(idx, e))
+
+            # Solo los widgets que NO tienen comando propio reciben el sel_press
+            sel_press_widgets = [btn_play, tag_lbl, l_st, af, name_frame, bt_eye]
+            for widget in sel_press_widgets:
                 widget.bind("<ButtonPress-1>", lambda e, idx=i: self._sel_press(idx, e, from_entry=False))
                 widget.bind("<B1-Motion>", lambda e: self._sel_motion(e))
                 widget.bind("<ButtonRelease-1>", lambda e: self._sel_release(e))
-                widget.bind("<Button-2>", lambda e, idx=i: self.show_context_menu(idx, e))
                 widget.bind("<Button-3>", lambda e, idx=i: self.show_context_menu(idx, e))
 
-            # Campos de texto: hover + click-para-seleccionar, pero drag libre (selección de texto)
             entry_widgets = [e_name, e_bpm, e_key]
             for widget in entry_widgets:
                 widget.bind("<Enter>", lambda e, idx=i: self.hover_in_row(idx))
                 widget.bind("<Leave>", lambda e, idx=i: self.hover_out_row(idx))
                 widget.bind("<ButtonPress-1>", lambda e, idx=i: self._sel_press(idx, e, from_entry=True))
-                # NO vinculamos B1-Motion ni ButtonRelease-1 aquí:
-                # el drag dentro del Entry lo maneja Tk para seleccionar texto
                 widget.bind("<Button-2>", lambda e, idx=i: self.show_context_menu(idx, e))
                 widget.bind("<Button-3>", lambda e, idx=i: self.show_context_menu(idx, e))
 
-            row_widgets = {'btn_play': btn_play, 'name': e_name, 'tag_lbl': tag_lbl, 'bpm': e_bpm, 'key': e_key, 'estado': l_st, 'btn_undo': bt_u, 'btn_web': bt_web, 'btn_analyze': bt_analyze, 'btn_wav': bt_w, 'frame': af, 'chk_wrap': chk_wrap, 'chk': chk}
+            row_widgets = {
+                'btn_play': btn_play, 'bpm': e_bpm, 'key': e_key, 'tag_lbl': tag_lbl,
+                'name_frame': name_frame, 'name': e_name, 'btn_eye': bt_eye,
+                'estado': l_st, 'btn_undo': bt_u, 'btn_web': bt_web,
+                'btn_analyze': bt_analyze, 'btn_wav': bt_w, 'frame': af,
+                'chk_wrap': chk_wrap, 'chk': chk,
+                'row_preview': False  # estado individual de preview por fila
+            }
             self.row_widgets.append(row_widgets)
             self.hide_row(i)
+
+    def _fmt_active_fields(self, fmt=None):
+        """Devuelve (bpm_active, key_active) según el formato de nombre activo."""
+        f = (fmt or self.format_var.get()).upper()
+        if f == "AÑADIR SOLO METADATOS":
+            return True, True   # ambos siempre editables en modo solo-metadatos
+        return "BPM" in f, "TONO" in f
+
+    def _sync_bpm_key_col_order(self):
+        """Reordena las celdas BPM/TONO de cada fila según el formato activo."""
+        fmt_now = self.format_var.get()
+        fu = fmt_now.upper()
+        ki, bi = fu.find("TONO"), fu.find("BPM")
+        tono_first = ki != -1 and (bi == -1 or ki < bi)
+        bpm_col  = 2 if tono_first else 1
+        tono_col = 1 if tono_first else 2
+        for i in range(self.NUM_VISIBLE_ROWS):
+            w = self.row_widgets[i]
+            w['bpm'].grid(row=i, column=bpm_col,  padx=5, pady=(2, 2), sticky="w")
+            w['key'].grid(row=i, column=tono_col, padx=5, pady=(2, 2), sticky="w")
 
     def _draw_chk(self, canvas, selected, bg_color=BG_ELEMENT):
         """Dibuja el cuadrado de selección de una fila."""
@@ -1924,6 +2330,144 @@ class YezkaApp(ctk.CTk):
             return
         self._set_checkbox_button_state(row_idx, hovered=False)
 
+    def _draw_chk_all(self):
+        """Dibuja el checkbox de 'seleccionar todo' en el header."""
+        if not hasattr(self, '_chk_all_canvas'):
+            return
+        canvas = self._chk_all_canvas
+        canvas.delete("all")
+        active_paths = [p for p in self.visible_paths if p]
+        all_sel = bool(active_paths) and all(p in self.selected_paths for p in active_paths)
+        if all_sel:
+            canvas.create_rectangle(2, 2, 14, 14, fill=ACCENT, outline=ACCENT, width=1)
+            canvas.create_line(3, 8, 6, 12, 13, 4, fill=BG_MAIN, width=2, capstyle="round", joinstyle="round")
+        else:
+            canvas.create_rectangle(2, 2, 14, 14, fill="", outline="#484848", width=1)
+
+    def _toggle_select_all(self):
+        """Selecciona o deselecciona todos los archivos cargados."""
+        if not self.loaded_paths:
+            return
+        active_paths = [p for p in self.visible_paths if p]
+        all_sel = bool(active_paths) and all(p in self.selected_paths for p in active_paths)
+        if all_sel:
+            self.selected_paths.clear()
+        else:
+            self.selected_paths.update(self.loaded_paths)
+        self._draw_chk_all()
+        self.refresh_virtual_grid()
+
+    def _show_tono_mode_menu(self, event):
+        """Menú contextual del header TONO para elegir modo de visualización."""
+        menu = tk.Menu(self, tearoff=0, bg="#1A1A1A", fg="#CCCCCC",
+                       activebackground="#2D2D2D", activeforeground="#FFFFFF",
+                       font=("monospace", 11), bd=0, relief="flat")
+        std_prefix = "✓ " if self.tono_display_mode == "STANDARD" else "  "
+        cam_prefix = "✓ " if self.tono_display_mode == "CAMELOT" else "  "
+        menu.add_command(
+            label=f"{std_prefix}Tonalidad estándar + color Camelot",
+            command=lambda: self._set_tono_display_mode("STANDARD")
+        )
+        menu.add_command(
+            label=f"{cam_prefix}Formato Camelot + color Camelot",
+            command=lambda: self._set_tono_display_mode("CAMELOT")
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _set_tono_display_mode(self, mode):
+        if mode not in ("STANDARD", "CAMELOT"):
+            return
+        self.tono_display_mode = mode
+        self.draw_headers()
+        self.refresh_virtual_grid()
+
+    # ── Acciones de menú contextual para seleccionados ────────────────────────
+
+    def _ctx_clear_bpm_selected(self):
+        """Borra el campo BPM de todos los archivos seleccionados."""
+        if not self.selected_paths:
+            return
+        for p in list(self.selected_paths):
+            if p in self.file_data:
+                self.file_data[p]['bpm'] = ''
+                self.file_data[p]['estado'] = COLOR_MODIFIED
+                self.file_data[p]['is_staged'] = True
+        self.log_message(f"> [BPM] BPM borrado de {len(self.selected_paths)} archivo(s)")
+        self.refresh_virtual_grid()
+        self.update_apply_button_state()
+
+    def _ctx_clear_tono_selected(self):
+        """Borra el campo Tono (key) de todos los archivos seleccionados."""
+        if not self.selected_paths:
+            return
+        for p in list(self.selected_paths):
+            if p in self.file_data:
+                self.file_data[p]['key'] = ''
+                self.file_data[p]['estado'] = COLOR_MODIFIED
+                self.file_data[p]['is_staged'] = True
+        self.log_message(f"> [TONO] Tono borrado de {len(self.selected_paths)} archivo(s)")
+        self.refresh_virtual_grid()
+        self.update_apply_button_state()
+
+    def _ctx_analyze_selected(self):
+        """Analiza con Essentia los archivos seleccionados, en secuencia."""
+        if not ESSENTIA_AVAILABLE:
+            self.log_message("> [ERROR] Essentia no detectado.")
+            return
+        targets = [p for p in self.selected_paths if p in self.file_data]
+        if not targets:
+            return
+        self.log_message(f"> [ANÁLISIS] Analizando {len(targets)} archivo(s) seleccionado(s)...")
+        self.show_loading(f"ANALIZANDO\n0/{len(targets)}")
+        self._analyze_sel_queue = targets
+        self._analyze_sel_total = len(targets)
+        self._analyze_sel_index = 0
+        self._run_next_analyze_sel()
+
+    def _run_next_analyze_sel(self):
+        idx = self._analyze_sel_index
+        total = self._analyze_sel_total
+        if idx >= total:
+            self.loading_base_msg = "¡ANÁLISIS\nCOMPLETO!"
+            self.hide_loading()
+            return
+        path = self._analyze_sel_queue[idx]
+        self.loading_base_msg = f"ANALIZANDO\n{idx+1}/{total}"
+        self.update()
+        threading.Thread(target=self._do_analyze_sel_one, args=(path, idx, total), daemon=True).start()
+
+    def _do_analyze_sel_one(self, path, idx, total):
+        try:
+            import essentia.standard as es_
+            audio = es_.MonoLoader(filename=path)()
+            bpm = self._apply_bpm_filter(es_.PercivalBpmEstimator()(audio))
+            key_val, scale_val, _ = es_.KeyExtractor(profileType="edma")(audio)
+            scale_short = "maj" if scale_val.lower() == "major" else "min"
+            detected_key = f"{key_val} {scale_short}"
+            detected_bpm = str(int(round(bpm)))
+            self.after(0, lambda: self._apply_sel_result(path, detected_bpm, detected_key, idx, total))
+        except Exception as e:
+            self.after(0, lambda err=e: self.log_message(f"> [ERROR] {os.path.basename(path)}: {err}"))
+            self._analyze_sel_index += 1
+            self.after(100, self._run_next_analyze_sel)
+
+    def _apply_sel_result(self, path, bpm, key, idx, total):
+        if path in self.file_data:
+            self.file_data[path]['bpm'] = bpm
+            self.file_data[path]['key'] = key
+            self.file_data[path]['estado'] = COLOR_MODIFIED
+            self.log_message(f"> [OK] {os.path.basename(path)} → BPM: {bpm} | KEY: {key}")
+        self._analyze_sel_index = idx + 1
+        self.refresh_virtual_grid()
+        # stage DESPUÉS de refresh para que los widgets ya tengan los valores nuevos
+        if path in self.file_data and path in self.visible_paths:
+            vi = self.visible_paths.index(path)
+            self.stage_row_changes(vi)
+        self._run_next_analyze_sel()
+
     def _update_selection_display(self):
         """Actualiza solo los fondos de selección de las filas visibles.
         Más rápido que refresh_virtual_grid durante el drag."""
@@ -1935,6 +2479,7 @@ class YezkaApp(ctk.CTk):
             w = self.row_widgets[i]
             bg = SEL_BG if path in self.selected_paths else BG_ELEMENT
             w['name'].configure(fg_color=bg)
+            w['name_frame'].configure(fg_color=bg)
             w['tag_lbl'].configure(fg_color=bg)
             w['bpm'].configure(fg_color=bg)
             w['key'].configure(fg_color=bg)
@@ -2038,7 +2583,7 @@ class YezkaApp(ctk.CTk):
     # ──────────────────────────────────────────────────────────────────────────
 
     def hover_in_row(self, row_idx, event=None):
-        if self._drag_active: return  # no interferir durante rubber-band
+        if self._drag_active: return
         if row_idx >= len(self.visible_paths) or not self.visible_paths[row_idx]: return
         path = self.visible_paths[row_idx]
         w = self.row_widgets[row_idx]
@@ -2046,12 +2591,13 @@ class YezkaApp(ctk.CTk):
         color = SEL_HOVER if is_selected else BG_HOVER
         w['btn_play'].configure(fg_color=color)
         w['name'].configure(fg_color=color)
+        w['name_frame'].configure(fg_color=color)
         w['tag_lbl'].configure(fg_color=color)
         w['bpm'].configure(fg_color=color)
         w['key'].configure(fg_color=color)
 
     def hover_out_row(self, row_idx, event=None):
-        if self._drag_active: return  # no interferir durante rubber-band
+        if self._drag_active: return
         if row_idx >= len(self.visible_paths) or not self.visible_paths[row_idx]: return
         path = self.visible_paths[row_idx]
         w = self.row_widgets[row_idx]
@@ -2059,6 +2605,7 @@ class YezkaApp(ctk.CTk):
         color = SEL_BG if is_selected else BG_ELEMENT
         w['btn_play'].configure(fg_color="transparent")
         w['name'].configure(fg_color=color)
+        w['name_frame'].configure(fg_color=color)
         w['tag_lbl'].configure(fg_color=color)
         w['bpm'].configure(fg_color=color)
         w['key'].configure(fg_color=color)
@@ -2076,8 +2623,30 @@ class YezkaApp(ctk.CTk):
         self.file_data[path]['estado'] = COLOR_MODIFIED
         w['name'].configure(text_color=TEXT_PURE)
         if not is_name:
+            # Persistir los valores editados en file_data de inmediato
+            # para que no se pierdan si el grid se refresca
+            bp = w['bpm'].get().strip()
+            ky = w['key'].get().strip()
+            self.file_data[path]['bpm'] = bp
+            self.file_data[path]['key'] = ky
+            self.file_data[path]['is_staged'] = True
             w['bpm'].configure(text_color=TEXT_PURE)
             w['key'].configure(text_color=TEXT_PURE)
+            # Reconstruir el nombre formateado en vivo sin refrescar todo el grid
+            fmt = self.format_var.get()
+            data = self.file_data[path]
+            pure_n = data.get('pure_name') or data['orig_name']
+            if fmt == "Añadir solo metadatos":
+                new_name = data['orig_name']
+            else:
+                new_name = self._build_formatted_name(pure_n, bp, ky, fmt)
+            data['name'] = new_name
+            row_preview_on = self._is_name_preview_on(path)
+            display_name = self._display_name_for_mode(data, row_preview_on)
+            w['name'].delete(0, 'end')
+            w['name'].insert(0, display_name)
+            w['name'].set_initial_state()
+            w['name'].configure(text_color=TEXT_PURE)
         self.update_apply_button_state()
 
     def stage_row_changes_if_needed(self, row_idx):
@@ -2089,8 +2658,10 @@ class YezkaApp(ctk.CTk):
         raw_name = w['name'].get().strip()
         bp = w['bpm'].get().strip()
         ky = w['key'].get().strip()
+        data = self.file_data[path]
+        current_display_name = self._display_name_for_mode(data, self._is_name_preview_on(path))
         
-        if raw_name != self.file_data[path]['name'] or bp != self.file_data[path]['bpm'] or ky != self.file_data[path]['key']:
+        if raw_name != current_display_name or bp != data['bpm'] or ky != data['key']:
             self.stage_row_changes(row_idx)
 
     def stage_row_changes(self, row_idx):
@@ -2100,27 +2671,35 @@ class YezkaApp(ctk.CTk):
         raw_name = w['name'].get().strip()
         bp = w['bpm'].get().strip()
         ky = w['key'].get().strip()
+        data = self.file_data[path]
+        row_preview_on = self._is_name_preview_on(path)
+        current_display_name = self._display_name_for_mode(data, row_preview_on)
         
-        if raw_name != self.file_data[path]['name']:
+        if raw_name != current_display_name:
             new_pure = self._extract_pure_name(raw_name, bp, ky)
-            self.file_data[path]['pure_name'] = new_pure
-            self.file_data[path]['orig_name'] = raw_name 
+            data['pure_name'] = new_pure
+            data['orig_name'] = raw_name 
             
-        self.file_data[path]['is_staged'] = True
+        data['is_staged'] = True
         
         fmt = self.format_var.get()
         if fmt == "Añadir solo metadatos":
-            new_formatted_name = self.file_data[path]['orig_name']
+            new_formatted_name = data['orig_name']
         else:
-            new_formatted_name = self._build_formatted_name(self.file_data[path]['pure_name'], bp, ky, fmt)
+            new_formatted_name = self._build_formatted_name(data['pure_name'], bp, ky, fmt)
         
         w['name'].delete(0, 'end'); w['name'].insert(0, new_formatted_name); w['name'].set_initial_state() 
-        self.file_data[path]['name'] = new_formatted_name
-        self.file_data[path]['bpm'] = bp
-        self.file_data[path]['key'] = ky
-        self.file_data[path]['estado'] = COLOR_MODIFIED
+        data['name'] = new_formatted_name
+        data['bpm'] = bp
+        data['key'] = ky
+        data['estado'] = COLOR_MODIFIED
         w['estado'].configure(text_color=COLOR_MODIFIED)
-        w['name'].configure(text_color=TEXT_PURE) 
+        # Ajustar campo y botón ojo según modo preview activo
+        row_preview_on = self._is_name_preview_on(path)
+        display_name = self._display_name_for_mode(data, row_preview_on)
+        w['name'].delete(0, 'end'); w['name'].insert(0, display_name); w['name'].set_initial_state()
+        w['btn_eye'].configure(image=self.ic_eye_on if row_preview_on else self.ic_eye_off)
+        w['name'].configure(text_color=TEXT_PURE)
         
         if fmt != "Añadir solo metadatos":
             self.log_message(f"> Preparado para guardar: {new_formatted_name}")
@@ -2130,11 +2709,11 @@ class YezkaApp(ctk.CTk):
         self.update_apply_button_state(); self.refresh_virtual_grid()
 
     def hide_row(self, index):
-        for key in ['btn_play', 'name', 'tag_lbl', 'bpm', 'key', 'estado', 'frame']:
+        for key in ['btn_play', 'bpm', 'key', 'tag_lbl', 'name_frame', 'estado', 'frame']:
             self.row_widgets[index][key].grid_remove()
 
     def show_row(self, index):
-        for key in ['btn_play', 'name', 'tag_lbl', 'bpm', 'key', 'estado', 'frame']:
+        for key in ['btn_play', 'bpm', 'key', 'tag_lbl', 'name_frame', 'estado', 'frame']:
             self.row_widgets[index][key].grid()
 
     def on_scrollbar(self, *args):
@@ -2177,7 +2756,17 @@ class YezkaApp(ctk.CTk):
                 w = self.row_widgets[i]
                 
                 self.show_row(i)
-                w['name'].delete(0, 'end'); w['name'].insert(0, data['name']); w['name'].set_initial_state() 
+
+                # Vista previa: ojo global o ojo individual de la fila
+                row_preview_on = self._is_name_preview_on(path)
+                w['row_preview'] = path in self.row_preview_paths
+                displayed_name = self._display_name_for_mode(data, row_preview_on)
+                w['name'].delete(0, 'end')
+                w['name'].insert(0, displayed_name)
+                w['name'].set_initial_state()
+
+                # Ícono del ojo por fila
+                w['btn_eye'].configure(image=self.ic_eye_on if row_preview_on else self.ic_eye_off)
                 
                 is_staged = data['estado'] == COLOR_MODIFIED
                 is_current_session = data.get('is_custom', False)  # guardado esta sesión
@@ -2201,39 +2790,71 @@ class YezkaApp(ctk.CTk):
                 # Fondo de selección
                 sel_bg = SEL_BG if is_selected else BG_ELEMENT
                 w['name'].configure(fg_color=sel_bg)
+                w['name_frame'].configure(fg_color=sel_bg)
                 w['tag_lbl'].configure(fg_color=sel_bg)
                 w['bpm'].configure(fg_color=sel_bg)
                 w['key'].configure(fg_color=sel_bg)
                 self._set_checkbox_button_state(i, hovered=False)
                 w['tag_lbl'].configure(text=data['ext'], text_color=TEXT_MUTED if data['ext'] == 'WAV' else ACCENT)
-                
+
+                _bpm_on, _key_on = self._fmt_active_fields()
+                _dim_bg   = "#0a0a0a"  # fondo casi negro para columna inactiva
+                _dim_text = "#252525"  # texto casi invisible
+
                 w['bpm'].delete(0, 'end')
                 if data['bpm']: w['bpm'].insert(0, data['bpm'])
                 w['bpm'].set_initial_state()
-                bpm_key_color = user_color if user_color else (TEXT_PURE if highlight else (COLOR_HIST_NAME if previously_edited else TEXT_PALE))
-                w['bpm'].configure(text_color=bpm_key_color)
-                
+                if not _bpm_on:
+                    w['bpm'].configure(fg_color=_dim_bg, text_color=_dim_text)
+                else:
+                    bpm_key_color = user_color if user_color else (TEXT_PURE if highlight else (COLOR_HIST_NAME if previously_edited else TEXT_PALE))
+                    w['bpm'].configure(text_color=bpm_key_color)
+
                 w['key'].delete(0, 'end')
-                if data['key']: w['key'].insert(0, data['key'])
+                if data['key']: w['key'].insert(0, self._key_display_value(data['key']))
                 w['key'].set_initial_state()
-                w['key'].configure(text_color=bpm_key_color)
+                if not _key_on:
+                    w['key'].configure(fg_color=_dim_bg, text_color=_dim_text)
+                else:
+                    base_key_color = user_color if user_color else (TEXT_PURE if highlight else (COLOR_HIST_NAME if previously_edited else TEXT_PALE))
+                    w['key'].configure(text_color=self._key_display_color(data['key'], base_key_color))
                 
                 display_estado = data['estado']
                 if user_color and display_estado != COLOR_MODIFIED:
                     display_estado = user_color
                 elif data.get('is_previously_edited', False) and not data.get('is_custom', False) and display_estado != COLOR_MODIFIED:
-                    display_estado = COLOR_HISTORY
+                    display_estado = COLOR_SAVED
                 w['estado'].configure(text_color=display_estado)
                 
+                # ── Botones ACCIONES: amarillo = hay algo que hacer ────────────────
+                missing_meta = not data.get('bpm') or not data.get('key')
+
+                # ↩ Descartar/revertir: activo cuando hay cambios staged o ya aplicados
                 can_undo = data['is_custom'] or data.get('is_staged', False)
-                if can_undo: 
-                    w['btn_undo'].configure(state="normal", image=self.ic_undo_accent if data['is_custom'] else self.ic_undo_red)
-                else: 
+                if can_undo:
+                    w['btn_undo'].configure(state="normal", image=self.ic_undo_accent)
+                else:
                     w['btn_undo'].configure(state="disabled", image=self.ic_undo_muted)
-                
-                if data.get('converted_to_wav', False): w['btn_wav'].configure(state="disabled", text_color_disabled=COLOR_SAVED, text_color=COLOR_SAVED)
-                elif data['ext'] == 'WAV': w['btn_wav'].configure(state="disabled", text_color_disabled=TEXT_MUTED, text_color=TEXT_MUTED)
-                else: w['btn_wav'].configure(state="normal", text_color=ACCENT)
+
+                # 🌐 Buscar en web: amarillo cuando faltan BPM o Tono
+                w['btn_web'].configure(
+                    state="normal",
+                    image=self.ic_web_accent if missing_meta else self.ic_web_muted
+                )
+
+                # 🪄 Analizar: amarillo cuando faltan BPM o Tono; apagado cuando ya tiene ambos
+                w['btn_analyze'].configure(
+                    state="normal",
+                    image=self.ic_analyze if missing_meta else self.ic_analyze_muted
+                )
+
+                # WAV: amarillo cuando puede convertir
+                if data.get('converted_to_wav', False):
+                    w['btn_wav'].configure(state="disabled", text_color_disabled=COLOR_SAVED, text_color=COLOR_SAVED)
+                elif data['ext'] == 'WAV':
+                    w['btn_wav'].configure(state="disabled", text_color_disabled=TEXT_MUTED, text_color=TEXT_MUTED)
+                else:
+                    w['btn_wav'].configure(state="normal", text_color=ACCENT)
                 
                 if self.is_playing and self.current_playing_path == path:
                     if self.is_paused:
@@ -2247,14 +2868,60 @@ class YezkaApp(ctk.CTk):
             else:
                 self.hide_row(i); self.visible_paths.append(None)
                 
+        self._draw_chk_all()
         self.update_apply_button_state(); self.update_wav_button_state()
 
     def update_wav_button_state(self):
-        if getattr(self, 'is_wav_all_applied', False): self.btn_mass_wav.configure(text="[ RESTAURAR ]", state="normal", text_color=COLOR_MODIFIED)
+        if getattr(self, 'is_wav_all_applied', False): self.btn_mass_wav.configure(text="RESTAURAR", state="normal", text_color=COLOR_MODIFIED)
         else:
             has_non_wav = any(d['ext'] != 'WAV' for d in self.file_data.values())
-            if has_non_wav: self.btn_mass_wav.configure(text="[ WAV ALL ]", state="normal", text_color=ACCENT)
-            else: self.btn_mass_wav.configure(text="[ WAV ALL ]", state="disabled", text_color=TEXT_MUTED)
+            if has_non_wav: self.btn_mass_wav.configure(text="WAV ALL", state="normal", text_color=ACCENT)
+            else: self.btn_mass_wav.configure(text="WAV ALL", state="disabled", text_color=TEXT_MUTED)
+        self.update_analyze_all_button_state()
+        self.update_undo_all_button_state()
+
+    def update_undo_all_button_state(self):
+        """Habilita/deshabilita el botón DESHACER según si hay un lote previo restaurable."""
+        can_undo = any(p in self.session_history for p in self._last_batch_paths)
+        if can_undo:
+            self.btn_undo_all.configure(state="normal", text_color=ACCENT, image=self.ic_undo_accent)
+        else:
+            self.btn_undo_all.configure(state="disabled", text_color=TEXT_MUTED, image=self.ic_undo_muted)
+
+    def undo_last_batch(self):
+        """Deshace todos los archivos del último lote aplicado con APLICAR CAMBIOS."""
+        to_undo = [p for p in self._last_batch_paths if p in self.session_history]
+        if not to_undo:
+            return
+        self._last_batch_paths = []
+        self.update_undo_all_button_state()
+        self.show_loading(f"DESHACIENDO\n{len(to_undo)} ARCHIVO(S)...")
+        self._process_next_undo_batch(to_undo, 0)
+
+    def _process_next_undo_batch(self, file_list, index):
+        if index >= len(file_list):
+            self.refresh_virtual_grid()
+            self.update_wav_button_state()
+            self.loading_base_msg = "¡DESHECHO\nCORRECTAMENTE!"
+            self.hide_loading()
+            return
+        p = file_list[index]
+        self.loading_base_msg = f"DESHACIENDO\n{index+1}/{len(file_list)}"
+        self.update()
+        self.undo_single_file(p, auto_update=False)
+        self.after(50, lambda: self._process_next_undo_batch(file_list, index + 1))
+
+    def update_analyze_all_button_state(self):
+        if getattr(self, 'is_analyzing_all', False):
+            self.btn_analyze_all.configure(text="CANCELAR", state="normal", text_color=COLOR_MODIFIED)
+            return
+        if not ESSENTIA_AVAILABLE:
+            self.btn_analyze_all.configure(text="ANALIZAR TODO", state="disabled", text_color=TEXT_MUTED)
+            return
+        if self.loaded_paths:
+            self.btn_analyze_all.configure(text="ANALIZAR TODO", state="normal", text_color=ACCENT)
+        else:
+            self.btn_analyze_all.configure(text="ANALIZAR TODO", state="disabled", text_color=TEXT_MUTED)
 
     def toggle_wav_all(self):
         if getattr(self, 'is_wav_all_applied', False): self.restore_all_formats()
@@ -2337,23 +3004,266 @@ class YezkaApp(ctk.CTk):
             self.after(0, lambda: self._apply_analysis(path, detected_bpm, detected_key))
 
         except Exception as e:
+            import traceback; traceback.print_exc()
             self.after(0, lambda: setattr(self, 'loading_base_msg', "¡ERROR EN\nANÁLISIS!"))
             self.after(0, self.hide_loading)
             self.after(0, lambda err=e: self.log_message(f"> [ERROR ESSENTIA]: {str(err)}"))
 
     def _apply_analysis(self, path, detected_bpm, detected_key):
-        if path in self.file_data:
-            self.file_data[path]['bpm'] = detected_bpm
-            self.file_data[path]['key'] = detected_key
-            self.file_data[path]['estado'] = COLOR_MODIFIED
-            self.log_message(f"> [OK] Análisis completado -> BPM: {detected_bpm} | KEY: {detected_key}")
+        try:
+            if path in self.file_data:
+                self.file_data[path]['bpm'] = detected_bpm
+                self.file_data[path]['key'] = detected_key
+                self.file_data[path]['estado'] = COLOR_MODIFIED
+                self.log_message(f"> [OK] Análisis completado -> BPM: {detected_bpm} | KEY: {detected_key}")
+                self.refresh_virtual_grid()
+                if path in self.visible_paths:
+                    idx = self.visible_paths.index(path)
+                    self.stage_row_changes(idx)
+                    # Activar preview de fila para mostrar el nombre formateado resultante
+                    if not self.preview_mode:
+                        self.row_preview_paths.add(path)
+                        w = self.row_widgets[idx]
+                        w['row_preview'] = True
+                        data = self.file_data[path]
+                        w['name'].delete(0, 'end')
+                        w['name'].insert(0, data['name'])
+                        w['name'].set_initial_state()
+                        w['btn_eye'].configure(image=self.ic_eye_on)
+        except Exception:
+            import traceback; traceback.print_exc()
+        finally:
+            self.loading_base_msg = "¡ANÁLISIS\nCOMPLETO!"
+            self.hide_loading()
+
+    # ── Análisis masivo ───────────────────────────────────────────────────────
+
+    def _apply_bpm_filter(self, bpm):
+        """Aplica el filtro de rango BPM configurado y devuelve el BPM corregido."""
+        if self.bpm_range == "Electrónica (90-170)":
+            if bpm < 90.0:
+                bpm *= 2.0
+            elif bpm > 175.0:
+                bpm /= 2.0
+        elif self.bpm_range == "Urbano/Reggaeton (70-120)":
+            if bpm > 130.0:
+                bpm /= 2.0
+            elif bpm < 60.0:
+                bpm *= 2.0
+        elif self.bpm_range == "Drum & Bass (150-200)":
+            if bpm < 130.0:
+                bpm *= 2.0
+        return bpm
+
+    def analyze_all_files(self):
+        """Punto de entrada del botón [ ANALIZAR TODO ] / [ CANCELAR ]."""
+        if self.is_analyzing_all:
+            self._analyze_cancel = True
+            self.log_message("> [ANÁLISIS] Cancelando — espera que termine el archivo actual...")
+            return
+
+        if not ESSENTIA_AVAILABLE:
+            self.log_message("> [ERROR] Essentia no detectado. Instálalo con: pip install essentia")
+            return
+
+        if not self.loaded_paths:
+            return
+
+        # Analizar todos los archivos cargados (re-análisis incluido)
+        to_analyze = list(self.loaded_paths)
+
+        total = len(to_analyze)
+        self.log_message(f"> [ANÁLISIS MASIVO] {total} archivo(s) → iniciando análisis con Essentia (Rango: {self.bpm_range})...")
+
+        # Snapshot para poder revertir si el usuario cancela y descarta resultados
+        self._analyze_originals = {
+            p: {
+                'bpm': self.file_data[p]['bpm'],
+                'key': self.file_data[p]['key'],
+                'name': self.file_data[p]['name'],
+                'pure_name': self.file_data[p]['pure_name'],
+                'orig_name': self.file_data[p]['orig_name'],
+                'estado': self.file_data[p]['estado'],
+                'is_staged': self.file_data[p]['is_staged'],
+            }
+            for p in to_analyze
+        }
+
+        self.is_analyzing_all = True
+        self._analyze_cancel = False
+        self.update_analyze_all_button_state()
+        self.show_loading(f"ANALIZANDO\n0 / {total}")
+
+        threading.Thread(
+            target=self._thread_analyze_all,
+            args=(to_analyze, total),
+            daemon=True
+        ).start()
+
+    def _thread_analyze_all(self, paths, total):
+        """Hilo de análisis secuencial — Essentia no es seguro en concurrencia."""
+        success = 0
+        failed = 0
+
+        cancelled = False
+        for idx, path in enumerate(paths):
+            if self._analyze_cancel:
+                cancelled = True
+                break
+
+            fname = os.path.basename(path)
+            short = (fname[:20] + "…") if len(fname) > 20 else fname
+            self.after(0, lambda msg=f"ANALIZANDO\n{idx + 1} / {total}": setattr(self, 'loading_base_msg', msg))
+
+            try:
+                audio = es.MonoLoader(filename=path)()
+
+                bpm_raw = es.PercivalBpmEstimator()(audio)
+                bpm_filtered = self._apply_bpm_filter(bpm_raw)
+                detected_bpm = str(int(round(bpm_filtered)))
+
+                key_val, scale_val, _ = es.KeyExtractor(profileType="edma")(audio)
+                scale_short = "maj" if scale_val.lower() == "major" else "min"
+                detected_key = f"{key_val} {scale_short}"
+
+                success += 1
+                self.after(0, lambda p=path, b=detected_bpm, k=detected_key, n=short:
+                    self._apply_batch_result(p, b, k, n))
+
+            except Exception as e:
+                failed += 1
+                self.after(0, lambda err=e, p=path:
+                    self.log_message(f"> [ERROR] {os.path.basename(p)}: {err}"))
+
+            # Pequeña pausa para que el event loop de Tk respire
+            time.sleep(0.05)
+
+        self.after(0, lambda s=success, f=failed, c=cancelled: self._finish_analyze_all(s, f, c))
+
+    def _apply_batch_result(self, path, detected_bpm, detected_key, short_name):
+        """Aplica el resultado de un análisis en el hilo principal."""
+        if path not in self.file_data:
+            return
+
+        data = self.file_data[path]
+        data['bpm'] = detected_bpm
+        data['key'] = detected_key
+        data['estado'] = COLOR_MODIFIED
+        data['is_staged'] = True
+
+        fmt = self.format_var.get()
+        if fmt != "Añadir solo metadatos":
+            data['name'] = self._build_formatted_name(data['pure_name'], detected_bpm, detected_key, fmt)
+
+        self.log_message(f"> ✓ {short_name}  →  {detected_bpm} BPM | {detected_key}")
+        self.refresh_virtual_grid()
+
+        # Activar preview de fila para mostrar el nombre formateado resultante
+        if not self.preview_mode and path in self.visible_paths:
+            idx = self.visible_paths.index(path)
+            w = self.row_widgets[idx]
+            self.row_preview_paths.add(path)
+            w['row_preview'] = True
+            w['name'].delete(0, 'end')
+            w['name'].insert(0, data['name'])
+            w['name'].set_initial_state()
+            w['btn_eye'].configure(image=self.ic_eye_on)
+
+    def _finish_analyze_all(self, success, failed, cancelled=False):
+        """Finaliza el proceso de análisis masivo."""
+        self.is_analyzing_all = False
+        self._analyze_cancel = False
+        self.update_analyze_all_button_state()
+
+        if cancelled and success > 0:
+            # Ocultar overlay antes de mostrar el diálogo
+            self.is_loading = False
+            self.loading_frame.place_forget()
+            self.update()
+
+            keep = messagebox.askyesno(
+                "Análisis cancelado",
+                f"Se analizaron {success} archivo(s) antes de cancelar.\n\n"
+                "¿Deseas conservar los resultados obtenidos hasta ahora?",
+                icon="question"
+            )
+            if keep:
+                self.log_message(f"> [ANÁLISIS] Cancelado. Se conservan {success} resultado(s) obtenido(s).")
+                self.update_apply_button_state()
+                self.refresh_virtual_grid()
+            else:
+                self._revert_batch_results()
+                self.log_message("> [ANÁLISIS] Cancelado. Resultados descartados — datos originales restaurados.")
+                self.update_apply_button_state()
+                self.refresh_virtual_grid()
+        else:
+            self.update_apply_button_state()
             self.refresh_virtual_grid()
-            if path in self.visible_paths:
-                idx = self.visible_paths.index(path)
-                self.stage_row_changes(idx)
-        
-        self.loading_base_msg = "¡ANÁLISIS\nCOMPLETO!"
-        self.hide_loading()
+
+            if cancelled:
+                # Cancelado pero sin resultados que preguntar
+                self.log_message("> [ANÁLISIS] Cancelado antes de obtener resultados.")
+                self.is_loading = False
+                self.loading_frame.place_forget()
+            elif success > 0:
+                self.log_message(f"> [ANÁLISIS MASIVO] Finalizado: {success} completados, {failed} errores.")
+                self.loading_base_msg = f"¡{success} ARCHIVOS\nANALIZADOS!"
+                self.hide_loading()
+            else:
+                self.loading_base_msg = "¡SIN CAMBIOS\nNUEVOS!"
+                self.hide_loading()
+
+        self._analyze_originals = {}
+
+    def _revert_batch_results(self):
+        """Restaura los valores de BPM/Key/nombre previos al análisis masivo."""
+        originals = getattr(self, '_analyze_originals', {})
+        for path, snap in originals.items():
+            if path not in self.file_data:
+                continue
+            data = self.file_data[path]
+            data['bpm']       = snap['bpm']
+            data['key']       = snap['key']
+            data['name']      = snap['name']
+            data['pure_name'] = snap['pure_name']
+            data['orig_name'] = snap['orig_name']
+            data['estado']    = snap['estado']
+            data['is_staged'] = snap['is_staged']
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def toggle_preview_mode(self):
+        """Activa/desactiva preview global de nombre formateado para todas las filas."""
+        self.preview_mode = not self.preview_mode
+        if hasattr(self, 'btn_header_eye'):
+            self.btn_header_eye.configure(image=self.ic_eye_on if self.preview_mode else self.ic_eye_off)
+        # Al activar global, resetear estados individuales para coherencia
+        self.row_preview_paths.clear()
+        for w in self.row_widgets:
+            w['row_preview'] = False
+        self.refresh_virtual_grid()
+
+    def toggle_row_preview(self, row_idx):
+        """Alterna preview individual de una fila (independiente del global)."""
+        if row_idx >= len(self.visible_paths) or not self.visible_paths[row_idx]:
+            return
+        w = self.row_widgets[row_idx]
+        path = self.visible_paths[row_idx]
+        # Estado efectivo actual
+        currently_showing_preview = self._is_name_preview_on(path)
+        if path in self.row_preview_paths:
+            self.row_preview_paths.discard(path)
+        elif not self.preview_mode:
+            self.row_preview_paths.add(path)
+
+        w['row_preview'] = path in self.row_preview_paths
+        data = self.file_data[path]
+        new_preview = self._is_name_preview_on(path)
+        displayed_name = self._display_name_for_mode(data, new_preview)
+        w['name'].delete(0, 'end')
+        w['name'].insert(0, displayed_name)
+        w['name'].set_initial_state()
+        w['btn_eye'].configure(image=self.ic_eye_on if new_preview else self.ic_eye_off)
 
     def sort_grid(self, col):
         if col == "NOMBRE DE ARCHIVOS":
@@ -2364,23 +3274,93 @@ class YezkaApp(ctk.CTk):
         self.show_loading(msg)
         self.after(400, lambda: self._do_sort_grid(col))
 
+    def _show_sort_menu(self, col, event):
+        """Despliega menú contextual con opciones de orden para la columna."""
+        menu = tk.Menu(self, tearoff=0, bg="#1A1A1A", fg="#CCCCCC",
+                       activebackground="#2D2D2D", activeforeground="#FFFFFF",
+                       font=("monospace", 11), bd=0, relief="flat")
+        if col == "NOMBRE DE ARCHIVOS":
+            menu.add_command(label="  A → Z",
+                command=lambda: self._sort_by(col, "az"))
+            menu.add_command(label="  Z → A",
+                command=lambda: self._sort_by(col, "za"))
+            menu.add_separator()
+            menu.add_command(label="  Más recientes primero",
+                command=lambda: self._sort_by(col, "recent"))
+            menu.add_command(label="  Más antiguos primero",
+                command=lambda: self._sort_by(col, "old"))
+        elif col == "BPM":
+            menu.add_command(label="  Más lento primero",
+                command=lambda: self._sort_by(col, "bpm_asc"))
+            menu.add_command(label="  Más rápido primero",
+                command=lambda: self._sort_by(col, "bpm_desc"))
+            menu.add_separator()
+            menu.add_command(label="  Alfabéticamente A → Z",
+                command=lambda: self._sort_by(col, "alpha_asc"))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _sort_by(self, col, mode):
+        """Ejecuta un criterio de orden específico."""
+        self.current_sort_col = col
+        if mode == "az":
+            self.sort_asc = True
+            self.loaded_paths.sort(key=lambda p: self.file_data[p]['pure_name'].lower())
+        elif mode == "za":
+            self.sort_asc = False
+            self.loaded_paths.sort(key=lambda p: self.file_data[p]['pure_name'].lower(), reverse=True)
+        elif mode == "recent":
+            self.sort_asc = False
+            self.loaded_paths.sort(
+                key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0, reverse=True)
+        elif mode == "old":
+            self.sort_asc = True
+            self.loaded_paths.sort(
+                key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0)
+        elif mode == "bpm_asc":
+            self.sort_asc = True
+            self.loaded_paths.sort(key=lambda p: self._safe_bpm(p))
+        elif mode == "bpm_desc":
+            self.sort_asc = False
+            self.loaded_paths.sort(key=lambda p: self._safe_bpm(p), reverse=True)
+        elif mode == "alpha_asc":
+            self.sort_asc = True
+            self.loaded_paths.sort(key=lambda p: f"{int(self._safe_bpm(p)):04d}")
+        self.top_index = 0
+        self.draw_headers()
+        self.refresh_virtual_grid()
+
+    def _safe_bpm(self, path):
+        try: return float(self.file_data[path]['bpm'])
+        except: return 0.0
+
     def _do_sort_grid(self, col):
         if self.current_sort_col == col: self.sort_asc = not self.sort_asc
-        else: self.current_sort_col = col; self.sort_asc = False if col in ["NOMBRE DE ARCHIVOS", "TEMPO/BPM", "ST"] else True
+        else: self.current_sort_col = col; self.sort_asc = False if col in ["NOMBRE DE ARCHIVOS", "BPM"] else True
         def get_sort_key(p):
             data = self.file_data[p]
             if col == "NOMBRE DE ARCHIVOS": return os.path.getmtime(p) if os.path.exists(p) else 0.0
             elif col == "FORMATO": return data['ext'].lower()
-            elif col == "TEMPO/BPM":
+            elif col == "BPM":
                 try: return float(data['bpm'])
                 except: return 0.0 if not self.sort_asc else 999.0
-            elif col == "KEY/TONO":
+            elif col in ["KEY/TONO", "TONO"]:
                 match = REGEX_KEY_STRICT.match(data['key'].strip())
                 if match: return (int(match.group(1)), match.group(2).upper())
                 return (99, data['key'].upper())
-            elif col == "ST": return self.persistent_edit_log.get(p, "")
+            elif col == "ST":
+                estado = self.file_data[p].get('estado', TEXT_MUTED)
+                if estado == COLOR_MODIFIED: return 2
+                if estado == COLOR_SAVED: return 1
+                return 0
             return ""
-        self.loaded_paths.sort(key=get_sort_key, reverse=not self.sort_asc)
+        # Para ST: ↑ = pendientes arriba (más urgente primero); el resto columnas usan lógica estándar
+        if col == "ST":
+            self.loaded_paths.sort(key=get_sort_key, reverse=self.sort_asc)
+        else:
+            self.loaded_paths.sort(key=get_sort_key, reverse=not self.sort_asc)
         self.top_index = 0
         self.draw_headers()
         self.refresh_virtual_grid()
@@ -2396,6 +3376,7 @@ class YezkaApp(ctk.CTk):
             from mutagen.mp3 import MP3
             from mutagen.flac import FLAC
             ext = os.path.splitext(filepath)[1].lower()
+            # ID3-based (WAV, AIFF, MP3)
             if ext == '.mp3':
                 audio = MP3(filepath)
                 if audio.tags:
@@ -2411,12 +3392,45 @@ class YezkaApp(ctk.CTk):
                 if audio.tags:
                     if 'TBPM' in audio.tags: bpm = str(audio.tags['TBPM'].text[0])
                     if 'TKEY' in audio.tags: key = str(audio.tags['TKEY'].text[0])
+            # Vorbis comment-based (FLAC, OGG, OPUS, WV, APE via Mutagen)
             elif ext == '.flac':
                 audio = FLAC(filepath)
-                if audio.tags:
-                    if 'bpm' in audio: bpm = str(audio['bpm'][0])
-                    if 'key' in audio: key = str(audio['key'][0])
-        except: pass 
+                if 'bpm' in audio: bpm = str(audio['bpm'][0])
+                if 'key' in audio: key = str(audio['key'][0])
+            elif ext in ('.ogg', '.oga'):
+                from mutagen.oggvorbis import OggVorbis
+                audio = OggVorbis(filepath)
+                if 'bpm' in audio: bpm = str(audio['bpm'][0])
+                if 'key' in audio: key = str(audio['key'][0])
+            elif ext == '.opus':
+                from mutagen.oggopus import OggOpus
+                audio = OggOpus(filepath)
+                if 'bpm' in audio: bpm = str(audio['bpm'][0])
+                if 'key' in audio: key = str(audio['key'][0])
+            elif ext in ('.m4a', '.aac', '.alac'):
+                from mutagen.mp4 import MP4
+                audio = MP4(filepath)
+                if 'tmpo' in audio: bpm = str(audio['tmpo'][0])
+                if '\xa9key' in audio: key = str(audio['\xa9key'][0])
+            elif ext == '.wma':
+                from mutagen.asf import ASF
+                audio = ASF(filepath)
+                if 'WM/BeatsPerMinute' in audio: bpm = str(audio['WM/BeatsPerMinute'][0])
+                if 'WM/InitialKey' in audio: key = str(audio['WM/InitialKey'][0])
+            elif ext == '.ape':
+                from mutagen.apev2 import APEv2
+                try:
+                    audio = APEv2(filepath)
+                    if 'BPM' in audio: bpm = str(audio['BPM'])
+                    if 'Key' in audio: key = str(audio['Key'])
+                except Exception: pass
+            elif ext == '.wv':
+                from mutagen.wavpack import WavPack
+                audio = WavPack(filepath)
+                if hasattr(audio, 'tags') and audio.tags:
+                    if 'BPM' in audio.tags: bpm = str(audio.tags['BPM'])
+                    if 'Key' in audio.tags: key = str(audio.tags['Key'])
+        except: pass
         self.metadata_cache[filepath] = {'bpm': bpm, 'key': key}
         return bpm, key
 
@@ -2454,28 +3468,69 @@ class YezkaApp(ctk.CTk):
                             raise exc
                 if not saved: audio.save()
 
-            if ext == '.mp3': update_id3(MP3(filepath))
-            elif ext == '.wav': update_id3(WAVE(filepath))
-            elif ext in ('.aiff', '.aif'): update_id3(AIFF(filepath))
-            elif ext == '.flac':
-                audio = FLAC(filepath)
+            def save_with_retry(audio):
+                for _ in range(4):
+                    try: audio.save(); return
+                    except Exception as exc:
+                        if 'Permission denied' in str(exc) or 'Errno 13' in str(exc): time.sleep(0.5)
+                        else: raise
+                audio.save()
+
+            def update_vorbis(audio):
                 if bpm: audio['bpm'] = bpm
                 else: audio.pop('bpm', None)
                 if key: audio['key'] = key
                 else: audio.pop('key', None)
-                
-                saved = False
-                for _ in range(4):
-                    try:
-                        audio.save()
-                        saved = True
-                        break
-                    except Exception as exc:
-                        if "Permission denied" in str(exc) or "Errno 13" in str(exc):
-                            time.sleep(0.5)
-                        else:
-                            raise exc
-                if not saved: audio.save()
+                save_with_retry(audio)
+
+            if ext == '.mp3': update_id3(MP3(filepath))
+            elif ext == '.wav': update_id3(WAVE(filepath))
+            elif ext in ('.aiff', '.aif'): update_id3(AIFF(filepath))
+            elif ext == '.flac': update_vorbis(FLAC(filepath))
+            elif ext in ('.ogg', '.oga'):
+                from mutagen.oggvorbis import OggVorbis
+                update_vorbis(OggVorbis(filepath))
+            elif ext == '.opus':
+                from mutagen.oggopus import OggOpus
+                update_vorbis(OggOpus(filepath))
+            elif ext in ('.m4a', '.aac', '.alac'):
+                from mutagen.mp4 import MP4
+                audio = MP4(filepath)
+                if bpm:
+                    try: audio['tmpo'] = [int(bpm)]
+                    except ValueError: audio['tmpo'] = [0]
+                else: audio.pop('tmpo', None)
+                if key: audio['\xa9key'] = [key]
+                else: audio.pop('\xa9key', None)
+                save_with_retry(audio)
+            elif ext == '.wma':
+                from mutagen.asf import ASF, ASFUnicodeAttribute
+                audio = ASF(filepath)
+                if bpm: audio['WM/BeatsPerMinute'] = [ASFUnicodeAttribute(bpm)]
+                else: audio.pop('WM/BeatsPerMinute', None)
+                if key: audio['WM/InitialKey'] = [ASFUnicodeAttribute(key)]
+                else: audio.pop('WM/InitialKey', None)
+                save_with_retry(audio)
+            elif ext == '.ape':
+                from mutagen.apev2 import APEv2
+                try:
+                    audio = APEv2(filepath)
+                except Exception:
+                    audio = APEv2()
+                if bpm: audio['BPM'] = bpm
+                else: audio.pop('BPM', None)
+                if key: audio['Key'] = key
+                else: audio.pop('Key', None)
+                save_with_retry(audio)
+            elif ext == '.wv':
+                from mutagen.wavpack import WavPack
+                audio = WavPack(filepath)
+                if not audio.tags: audio.add_tags()
+                if bpm: audio.tags['BPM'] = bpm
+                else: audio.tags.pop('BPM', None)
+                if key: audio.tags['Key'] = key
+                else: audio.tags.pop('Key', None)
+                save_with_retry(audio)
 
         except Exception as e:
             self.after(0, lambda: self.log_message(f"> Advertencia ID3 en {os.path.basename(filepath)}: {e}"))
@@ -2500,8 +3555,9 @@ class YezkaApp(ctk.CTk):
             bpm = w['bpm'].get().strip()
             key = w['key'].get().strip()
             data = self.file_data[path]
+            current_display_name = self._display_name_for_mode(data, self._is_name_preview_on(path))
 
-            if raw_name != data['name']:
+            if raw_name != current_display_name:
                 data['orig_name'] = raw_name
                 data['pure_name'] = self._extract_pure_name(raw_name, bpm, key)
 
@@ -2518,9 +3574,11 @@ class YezkaApp(ctk.CTk):
 
     def _do_clear_all(self):
         self.csv_path = ""; self.loaded_paths.clear(); self.file_data.clear(); self.session_history.clear(); self.metadata_cache.clear()
+        self._last_batch_paths = []
         self.current_sort_col = "NOMBRE DE ARCHIVOS"
         self.sort_asc = True; self.top_index = 0
         self.is_wav_all_applied = False
+        self.row_preview_paths.clear()
         self.current_local_dir = ""
         self.lbl_local_path.configure(text="Ruta: Ninguna")
         self.draw_headers(); self._update_loaded_count_display(); self.refresh_virtual_grid() 
@@ -2550,8 +3608,11 @@ class YezkaApp(ctk.CTk):
                             break
                             
                 new_paths.append(p)
+                # Si el archivo ya tiene BPM/Key embebidos en el nombre, mostrar
+                # solo el título limpio (pure_n) — los valores están en sus columnas.
+                display_orig = pure_n if is_formatted else bn
                 new_data[p] = {
-                    'name': bn, 'pure_name': pure_n, 'orig_name': bn, 'bpm': s_bpm, 'key': s_key, 
+                    'name': display_orig, 'pure_name': pure_n, 'orig_name': bn, 'bpm': s_bpm, 'key': s_key, 
                     'ext': ep, 'estado': COLOR_SAVED if (cu or is_formatted) else TEXT_MUTED, 
                     'is_custom': cu, 
                     'is_formatted': is_formatted,
@@ -2579,7 +3640,7 @@ class YezkaApp(ctk.CTk):
 
     def _thread_select_folder(self, f):
         time.sleep(0.5) 
-        paths = [os.path.join(f, x) for x in os.listdir(f) if x.lower().endswith(('.wav','.aiff','.mp3','.flac'))]
+        paths = [os.path.join(f, x) for x in os.listdir(f) if x.lower().endswith(self.valid_extensions)]
         new_paths, new_data = self._prepare_files_data(paths)
         self.after(0, lambda: self._finish_select_folder(f, new_paths, new_data))
 
@@ -2591,7 +3652,11 @@ class YezkaApp(ctk.CTk):
         self.hide_loading()
 
     def select_files(self):
-        f = filedialog.askopenfilenames(filetypes=[("Audio Files", "*.wav *.aiff *.mp3 *.flac")])
+        f = filedialog.askopenfilenames(filetypes=[
+            ("Audio Files",
+             "*.wav *.aiff *.aif *.mp3 *.flac *.ogg *.oga *.opus *.m4a *.aac *.alac *.wma *.ape *.wv *.dsf"),
+            ("Todos los archivos", "*.*")
+        ])
         self.focus_force() 
         if f:
             self.current_local_dir = os.path.dirname(f[0])
@@ -2691,7 +3756,7 @@ class YezkaApp(ctk.CTk):
         self.refresh_virtual_grid()
         self.loading_base_msg = "¡TODOS\nCONVERTIDOS!"
         
-        if self.tabs.get().startswith("CARPETA INTELIGENTE"):
+        if self._current_tab_is_smart():
             self._start_smart_observer()
 
         self.save_edit_log()
@@ -2718,7 +3783,7 @@ class YezkaApp(ctk.CTk):
             self.is_wav_all_applied = False
             self.update_wav_button_state(); self.refresh_virtual_grid()
             self.loading_base_msg = "¡FORMATOS\nRESTAURADOS!"
-            if self.tabs.get().startswith("CARPETA INTELIGENTE"):
+            if self._current_tab_is_smart():
                 self._start_smart_observer()
             self.hide_loading()
             return
@@ -2848,14 +3913,17 @@ class YezkaApp(ctk.CTk):
             if old_p in self.loaded_paths: self.loaded_paths[self.loaded_paths.index(old_p)] = new_p
             
             self.file_data[new_p] = new_data
-            if old_p != new_p:
-                h = self.session_history.pop(old_p) if old_p in self.session_history else old_p
-                self.session_history[new_p] = h
-                if old_p in self.metadata_cache: self.metadata_cache[new_p] = self.metadata_cache.pop(old_p)
+            # Siempre registrar en session_history (incluso same-path para metadatos)
+            h = self.session_history.pop(old_p) if old_p in self.session_history else old_p
+            self.session_history[new_p] = h
+            if old_p != new_p and old_p in self.metadata_cache:
+                self.metadata_cache[new_p] = self.metadata_cache.pop(old_p)
                 
             self.after(3000, lambda op=old_p, np=new_p: self._clear_shield(op, np))
             
         edited_paths = [new_p for (_, new_p, _) in success_updates]
+        self._last_batch_paths = edited_paths   # guardar para deshacer un paso
+        self.update_undo_all_button_state()      # activar botón inmediatamente
         self.add_to_edit_log(edited_paths)
         self.show_loading("ACTUALIZANDO\nCARPETA...")
         self.after(1500, self._finalize_mass_conversion)
